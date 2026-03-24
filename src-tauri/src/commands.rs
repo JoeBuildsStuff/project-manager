@@ -1,53 +1,144 @@
-use rusqlite::{Connection, Result as SqlResult};
+use crate::config::{self, AppConfig};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::LazyLock;
+use std::sync::RwLock;
 
-/// Workspace root: resolved once at startup.
-/// In dev (`cargo` or `tauri dev`), walk up from the Cargo manifest dir.
-/// In production (bundled .app), walk up from the executable.
-/// Falls back to `WORKSPACE_ROOT` env var if set.
-static WORKSPACE: LazyLock<PathBuf> = LazyLock::new(|| {
-    // 1. Explicit env override
-    if let Ok(p) = std::env::var("WORKSPACE_ROOT") {
-        let pb = PathBuf::from(p);
-        if pb.join("project-metadata.sqlite").exists() {
-            return pb;
+// ---------------------------------------------------------------------------
+// Managed state – set once on startup (or during onboarding), read by all cmds
+// ---------------------------------------------------------------------------
+
+pub struct WorkspaceState {
+    pub path: RwLock<Option<PathBuf>>,
+}
+
+impl WorkspaceState {
+    pub fn new() -> Self {
+        let config = config::read_config();
+        let path = config.workspace_path.map(PathBuf::from).filter(|p| {
+            p.join("project-metadata.sqlite").exists()
+        });
+        Self {
+            path: RwLock::new(path),
         }
     }
+}
 
-    // 2. Walk up from the executable to find the workspace root
-    //    (contains project-metadata.sqlite)
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.as_path();
-        while let Some(parent) = dir.parent() {
-            if parent.join("project-metadata.sqlite").exists() {
-                return parent.to_path_buf();
-            }
-            dir = parent;
-        }
+fn workspace(state: &WorkspaceState) -> Result<PathBuf, String> {
+    state
+        .path
+        .read()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or_else(|| "No workspace configured".into())
+}
+
+fn db_path(state: &WorkspaceState) -> Result<PathBuf, String> {
+    Ok(workspace(state)?.join("project-metadata.sqlite"))
+}
+
+fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
+    let path = db_path(state)?;
+    Connection::open(&path).map_err(|e| e.to_string())
+}
+
+fn workspace_path(state: &WorkspaceState, folder_key: &str) -> Result<PathBuf, String> {
+    Ok(workspace(state)?.join(folder_key))
+}
+
+// ---------------------------------------------------------------------------
+// Workspace config commands
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct WorkspaceConfig {
+    pub workspace_path: Option<String>,
+    pub is_configured: bool,
+}
+
+#[tauri::command]
+pub fn get_workspace_config(state: tauri::State<'_, WorkspaceState>) -> Result<WorkspaceConfig, String> {
+    let path = state.path.read().map_err(|e| e.to_string())?;
+    Ok(WorkspaceConfig {
+        workspace_path: path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        is_configured: path.is_some(),
+    })
+}
+
+#[tauri::command]
+pub fn set_workspace_path(
+    path: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<WorkspaceConfig, String> {
+    let workspace_dir = PathBuf::from(&path);
+    if !workspace_dir.is_dir() {
+        return Err("Selected path is not a directory".into());
     }
 
-    // 3. Walk up from current working directory
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut dir = cwd.as_path();
-        loop {
-            if dir.join("project-metadata.sqlite").exists() {
-                return dir.to_path_buf();
-            }
-            match dir.parent() {
-                Some(parent) => dir = parent,
-                None => break,
-            }
-        }
+    // Create DB if it doesn't exist
+    let db_file = workspace_dir.join("project-metadata.sqlite");
+    if !db_file.exists() {
+        initialize_db(&db_file)?;
     }
 
-    panic!("Could not locate workspace root (project-metadata.sqlite). Set WORKSPACE_ROOT env var.");
-});
+    // Create a README in the workspace
+    let readme = workspace_dir.join("README.md");
+    if !readme.exists() {
+        let content = "# Project Manager Workspace\n\n\
+            This folder is managed by [Project Manager](https://github.com/JoeBuildsStuff/project-manager).\n\n\
+            - `project-metadata.sqlite` — project tracking database\n\
+            - Each subfolder is a tracked project\n";
+        fs::write(&readme, content).map_err(|e| format!("Failed to write README: {e}"))?;
+    }
 
-static DB_PATH: LazyLock<PathBuf> = LazyLock::new(|| WORKSPACE.join("project-metadata.sqlite"));
+    // Persist to config
+    config::write_config(&AppConfig {
+        workspace_path: Some(path.clone()),
+    })?;
+
+    // Update in-memory state
+    let mut guard = state.path.write().map_err(|e| e.to_string())?;
+    *guard = Some(workspace_dir);
+
+    Ok(WorkspaceConfig {
+        workspace_path: Some(path),
+        is_configured: true,
+    })
+}
+
+fn initialize_db(db_file: &Path) -> Result<(), String> {
+    let conn = Connection::open(db_file).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS project_metadata (
+            folder_key        TEXT PRIMARY KEY,
+            folder_name       TEXT NOT NULL,
+            description       TEXT,
+            status            TEXT DEFAULT 'inbox',
+            category          TEXT DEFAULT 'project',
+            repo              TEXT,
+            host              TEXT,
+            repo_owner        TEXT,
+            commit_count      INTEGER,
+            last_commit_date  TEXT,
+            days_since_last_commit INTEGER,
+            deployment        TEXT,
+            production_url    TEXT,
+            deploy_platform   TEXT,
+            vercel_team_slug  TEXT,
+            vercel_project_name TEXT,
+            updated_at        TEXT DEFAULT (datetime('now')),
+            created_at        TEXT DEFAULT (datetime('now'))
+        );",
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Data types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Project {
@@ -103,13 +194,9 @@ pub struct DeleteGuardrails {
     pub last_commit_date: Option<String>,
 }
 
-fn open_db() -> SqlResult<Connection> {
-    Connection::open(DB_PATH.as_path())
-}
-
-fn workspace_path(folder_key: &str) -> PathBuf {
-    WORKSPACE.join(folder_key)
-}
+// ---------------------------------------------------------------------------
+// Git helpers
+// ---------------------------------------------------------------------------
 
 fn repo_path_for_folder(path: &Path) -> Option<PathBuf> {
     if path.join(".git").exists() {
@@ -200,6 +287,10 @@ fn git_diff_line_stats(path: &Path) -> (Option<i64>, Option<i64>) {
     (Some(added), Some(removed))
 }
 
+// ---------------------------------------------------------------------------
+// Project CRUD commands
+// ---------------------------------------------------------------------------
+
 #[tauri::command]
 pub fn get_projects(
     status_filter: Option<String>,
@@ -207,8 +298,9 @@ pub fn get_projects(
     deploy_filter: Option<String>,
     host_filter: Option<String>,
     search: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Vec<Project>, String> {
-    let conn = open_db().map_err(|e| e.to_string())?;
+    let conn = open_db(&state)?;
 
     let mut conditions: Vec<String> = vec![];
 
@@ -262,11 +354,12 @@ pub fn get_projects(
         where_clause
     );
 
+    let ws = workspace(&state)?;
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
             let folder_key: String = row.get(0)?;
-            let diff_path = workspace_path(&folder_key);
+            let diff_path = ws.join(&folder_key);
             let repo_path = repo_path_for_folder(&diff_path);
             let (lines_added, lines_removed) = repo_path
                 .as_deref()
@@ -304,8 +397,10 @@ pub fn get_projects(
 }
 
 #[tauri::command]
-pub fn get_filter_options() -> Result<FilterOptions, String> {
-    let conn = open_db().map_err(|e| e.to_string())?;
+pub fn get_filter_options(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<FilterOptions, String> {
+    let conn = open_db(&state)?;
 
     let mut deploy_values: Vec<String> = Vec::new();
     let mut stmt = conn
@@ -332,8 +427,12 @@ pub fn get_filter_options() -> Result<FilterOptions, String> {
 }
 
 #[tauri::command]
-pub fn get_project(folder_key: String) -> Result<Option<Project>, String> {
-    let conn = open_db().map_err(|e| e.to_string())?;
+pub fn get_project(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Option<Project>, String> {
+    let conn = open_db(&state)?;
+    let ws = workspace(&state)?;
     let mut stmt = conn
         .prepare(
             "SELECT folder_key, folder_name, description, status, category, repo, host, repo_owner,
@@ -347,7 +446,7 @@ pub fn get_project(folder_key: String) -> Result<Option<Project>, String> {
     let mut rows = stmt
         .query_map([&folder_key], |row| {
             let folder_key: String = row.get(0)?;
-            let diff_path = workspace_path(&folder_key);
+            let diff_path = ws.join(&folder_key);
             let repo_path = repo_path_for_folder(&diff_path);
             let (lines_added, lines_removed) = repo_path
                 .as_deref()
@@ -385,8 +484,12 @@ pub fn get_project(folder_key: String) -> Result<Option<Project>, String> {
 }
 
 #[tauri::command]
-pub fn update_project_status(folder_key: String, status: String) -> Result<(), String> {
-    let conn = open_db().map_err(|e| e.to_string())?;
+pub fn update_project_status(
+    folder_key: String,
+    status: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let conn = open_db(&state)?;
     conn.execute(
         "UPDATE project_metadata SET status = ?1 WHERE folder_key = ?2",
         [&status, &folder_key],
@@ -396,8 +499,11 @@ pub fn update_project_status(folder_key: String, status: String) -> Result<(), S
 }
 
 #[tauri::command]
-pub fn open_in_finder(folder_key: String) -> Result<(), String> {
-    let path = WORKSPACE.join(&folder_key);
+pub fn open_in_finder(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path = workspace_path(&state, &folder_key)?;
     Command::new("open")
         .arg(&path)
         .spawn()
@@ -406,8 +512,11 @@ pub fn open_in_finder(folder_key: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn open_in_vscode(folder_key: String) -> Result<(), String> {
-    let path = WORKSPACE.join(&folder_key);
+pub fn open_in_vscode(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path = workspace_path(&state, &folder_key)?;
     let cursor_result = Command::new("cursor").arg(&path).spawn();
     if cursor_result.is_ok() {
         return Ok(());
@@ -431,8 +540,11 @@ pub fn open_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_git_status(folder_key: String) -> Result<GitStatus, String> {
-    let path = WORKSPACE.join(&folder_key);
+pub fn get_git_status(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<GitStatus, String> {
+    let path = workspace_path(&state, &folder_key)?;
     let output = Command::new("git")
         .arg("-C")
         .arg(&path)
@@ -451,8 +563,11 @@ pub fn get_git_status(folder_key: String) -> Result<GitStatus, String> {
 }
 
 #[tauri::command]
-pub fn get_delete_guardrails(folder_key: String) -> Result<DeleteGuardrails, String> {
-    let conn = open_db().map_err(|e| e.to_string())?;
+pub fn get_delete_guardrails(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<DeleteGuardrails, String> {
+    let conn = open_db(&state)?;
     let row = conn
         .query_row(
             "SELECT folder_name, status, category, production_url, deploy_platform, commit_count, last_commit_date
@@ -481,7 +596,7 @@ pub fn get_delete_guardrails(folder_key: String) -> Result<DeleteGuardrails, Str
         )
         .map_err(|e| e.to_string())?;
 
-    let path = workspace_path(&folder_key);
+    let path = workspace_path(&state, &folder_key)?;
     let exists_on_disk = path.is_dir();
     let repo_path = if exists_on_disk {
         repo_path_for_folder(&path)
@@ -517,19 +632,23 @@ pub fn get_delete_guardrails(folder_key: String) -> Result<DeleteGuardrails, Str
 }
 
 #[tauri::command]
-pub fn delete_projects(folder_keys: Vec<String>) -> Result<usize, String> {
+pub fn delete_projects(
+    folder_keys: Vec<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<usize, String> {
     if folder_keys.is_empty() {
         return Ok(0);
     }
 
+    let ws = workspace(&state)?;
     for folder_key in &folder_keys {
-        let path = workspace_path(folder_key);
+        let path = ws.join(folder_key);
         if path.exists() {
             fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
         }
     }
 
-    let mut conn = open_db().map_err(|e| e.to_string())?;
+    let mut conn = open_db(&state)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let mut count = 0;
     for folder_key in &folder_keys {
@@ -546,13 +665,16 @@ pub fn delete_projects(folder_keys: Vec<String>) -> Result<usize, String> {
 }
 
 #[tauri::command]
-pub fn delete_project_folder(folder_key: String) -> Result<usize, String> {
-    let path = workspace_path(&folder_key);
+pub fn delete_project_folder(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<usize, String> {
+    let path = workspace_path(&state, &folder_key)?;
     if path.exists() {
         fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
     }
 
-    let conn = open_db().map_err(|e| e.to_string())?;
+    let conn = open_db(&state)?;
     let like_pattern = format!("{}/%", folder_key);
     let count = conn
         .execute(
@@ -564,7 +686,11 @@ pub fn delete_project_folder(folder_key: String) -> Result<usize, String> {
 }
 
 #[tauri::command]
-pub fn rename_project_folder(folder_key: String, new_name: String) -> Result<String, String> {
+pub fn rename_project_folder(
+    folder_key: String,
+    new_name: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<String, String> {
     let trimmed = new_name.trim();
     if trimmed.is_empty() {
         return Err("New folder name is required.".into());
@@ -573,7 +699,7 @@ pub fn rename_project_folder(folder_key: String, new_name: String) -> Result<Str
         return Err("Folder name cannot contain path separators.".into());
     }
 
-    let old_path = workspace_path(&folder_key);
+    let old_path = workspace_path(&state, &folder_key)?;
     if !old_path.is_dir() {
         return Err("Folder does not exist on disk.".into());
     }
@@ -590,14 +716,15 @@ pub fn rename_project_folder(folder_key: String, new_name: String) -> Result<Str
         return Ok(new_folder_key);
     }
 
-    let new_path = workspace_path(&new_folder_key);
+    let ws = workspace(&state)?;
+    let new_path = ws.join(&new_folder_key);
     if new_path.exists() {
         return Err("A folder with that name already exists.".into());
     }
 
     fs::rename(&old_path, &new_path).map_err(|e| e.to_string())?;
 
-    let conn = open_db().map_err(|e| e.to_string())?;
+    let conn = open_db(&state)?;
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
 
     tx.execute(
@@ -632,11 +759,13 @@ pub fn create_project(
     status: String,
     category: String,
     description: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
-    let folder_path = WORKSPACE.join(&folder_key);
+    let ws = workspace(&state)?;
+    let folder_path = ws.join(&folder_key);
     std::fs::create_dir_all(&folder_path).map_err(|e| e.to_string())?;
 
-    let conn = open_db().map_err(|e| e.to_string())?;
+    let conn = open_db(&state)?;
     conn.execute(
         "INSERT INTO project_metadata (folder_key, folder_name, status, category, description)
          VALUES (?1, ?2, ?3, ?4, ?5)
@@ -652,10 +781,13 @@ pub fn create_project(
 }
 
 #[tauri::command]
-pub fn run_sync_scripts() -> Result<String, String> {
+pub fn run_sync_scripts(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<String, String> {
+    let ws = workspace(&state)?;
     let output = Command::new("python3")
         .args(["scripts/update-readme-repo-from-git.py"])
-        .current_dir(WORKSPACE.as_path())
+        .current_dir(&ws)
         .output()
         .map_err(|e| e.to_string())?;
 

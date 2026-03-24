@@ -6,8 +6,15 @@ import AppSidebar from "./components/Sidebar";
 import ProjectTable from "./components/ProjectTable";
 import ProjectDetail from "./components/ProjectDetail";
 import NewProjectDialog from "./components/NewProjectDialog";
+import WorkspaceSetup from "./components/WorkspaceSetup";
+
+interface WorkspaceConfig {
+  workspace_path: string | null;
+  is_configured: boolean;
+}
 
 export default function App() {
+  const [workspaceReady, setWorkspaceReady] = useState<boolean | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<Project | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -20,6 +27,13 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [filterOptions, setFilterOptions] = useState<{ deploy_platforms: string[]; hosts: string[] }>({ deploy_platforms: [], hosts: [] });
+
+  // Check workspace config on mount
+  useEffect(() => {
+    invoke<WorkspaceConfig>("get_workspace_config").then((config) => {
+      setWorkspaceReady(config.is_configured);
+    });
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -41,11 +55,15 @@ export default function App() {
     }
   }, [statusFilter, categoryFilter, deployFilter, hostFilter, search, selected?.folder_key]);
 
-  useEffect(() => { load(); }, [statusFilter, categoryFilter, deployFilter, hostFilter, search]);
+  useEffect(() => {
+    if (workspaceReady) load();
+  }, [workspaceReady, statusFilter, categoryFilter, deployFilter, hostFilter, search]);
 
   useEffect(() => {
-    invoke<{ deploy_platforms: string[]; hosts: string[] }>("get_filter_options").then(setFilterOptions);
-  }, [projects]);
+    if (workspaceReady) {
+      invoke<{ deploy_platforms: string[]; hosts: string[] }>("get_filter_options").then(setFilterOptions);
+    }
+  }, [workspaceReady, projects]);
 
   const handleSync = async () => {
     setSyncing(true);
@@ -76,6 +94,20 @@ export default function App() {
     }
     await load();
   };
+
+  // Loading state while checking config
+  if (workspaceReady === null) {
+    return <div className="h-screen bg-background" />;
+  }
+
+  // Onboarding
+  if (!workspaceReady) {
+    return (
+      <WorkspaceSetup
+        onConfigured={() => setWorkspaceReady(true)}
+      />
+    );
+  }
 
   return (
     <div className="h-screen overflow-hidden">

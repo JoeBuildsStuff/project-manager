@@ -1,5 +1,5 @@
 {
-  "productName": "project-manager",
+  "productName": "Project Manager",
   "version": "0.1.0",
   "identifier": "com.joebuilds.project-manager",
   "build": {
@@ -36,6 +36,12 @@
   "plugins": {
     "shell": {
       "open": true
+    },
+    "updater": {
+      "endpoints": [
+        "https://github.com/JoeBuildsStuff/project-manager/releases/latest/download/latest.json"
+      ],
+      "pubkey": ""
     }
   }
 }
