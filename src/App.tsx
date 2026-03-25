@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import type { Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter } from "./types";
 import AppSidebar from "./components/Sidebar";
@@ -7,6 +8,8 @@ import ProjectTable from "./components/ProjectTable";
 import ProjectDetail from "./components/ProjectDetail";
 import NewProjectDialog from "./components/NewProjectDialog";
 import WorkspaceSetup from "./components/WorkspaceSetup";
+import Settings from "./components/Settings";
+import { perfStart, perfEnd } from "./lib/perf";
 
 interface WorkspaceConfig {
   workspace_path: string | null;
@@ -18,8 +21,18 @@ interface UpdateInfo {
   body?: string;
 }
 
+interface DiffStat {
+  folder_key: string;
+  lines_added: number | null;
+  lines_removed: number | null;
+}
+
+type View = "projects" | "settings";
+
 export default function App() {
   const [workspaceReady, setWorkspaceReady] = useState<boolean | null>(null);
+  const [workspacePath, setWorkspacePath] = useState<string | null>(null);
+  const [view, setView] = useState<View>("projects");
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [installing, setInstalling] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -37,16 +50,29 @@ export default function App() {
 
   // Check workspace config on mount
   useEffect(() => {
+    const t = perfStart("get_workspace_config");
     invoke<WorkspaceConfig>("get_workspace_config").then((config) => {
+      perfEnd("get_workspace_config", t);
       setWorkspaceReady(config.is_configured);
+      setWorkspacePath(config.workspace_path);
     });
   }, []);
 
   // Check for updates silently on launch
   useEffect(() => {
+    const t = perfStart("check_for_update");
     invoke<UpdateInfo | null>("check_for_update").then((info) => {
+      perfEnd("check_for_update", t);
       if (info) setUpdateInfo(info);
-    }).catch(() => {});
+    }).catch(() => { perfEnd("check_for_update (failed)", t); });
+  }, []);
+
+  // Listen for update-available events from the native menu "Check for Updates..."
+  useEffect(() => {
+    const unlisten = listen<string>("update-available", (event) => {
+      setUpdateInfo({ version: event.payload });
+    });
+    return () => { unlisten.then((f) => f()); };
   }, []);
 
   const handleInstallUpdate = async () => {
@@ -58,8 +84,29 @@ export default function App() {
     }
   };
 
+  // Lazy-load diff stats after projects render
+  const loadDiffStats = useCallback(async () => {
+    const t = perfStart("get_diff_stats");
+    try {
+      const stats = await invoke<DiffStat[]>("get_diff_stats");
+      perfEnd(`get_diff_stats (${stats.length} entries)`, t);
+      const map = new Map(stats.map((s) => [s.folder_key, s]));
+      setProjects((prev) =>
+        prev.map((p) => {
+          const s = map.get(p.folder_key);
+          return s
+            ? { ...p, lines_added: s.lines_added, lines_removed: s.lines_removed }
+            : p;
+        })
+      );
+    } catch {
+      perfEnd("get_diff_stats (failed)", t);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
+    const t = perfStart("get_projects");
     try {
       const rows = await invoke<Project[]>("get_projects", {
         statusFilter: statusFilter === "all" ? null : statusFilter,
@@ -68,6 +115,7 @@ export default function App() {
         hostFilter: hostFilter === "all" ? null : hostFilter,
         search: search || null,
       });
+      perfEnd(`get_projects (${rows.length} rows)`, t);
       setProjects(rows);
       if (selected) {
         const updated = rows.find((p) => p.folder_key === selected.folder_key);
@@ -82,9 +130,20 @@ export default function App() {
     if (workspaceReady) load();
   }, [workspaceReady, statusFilter, categoryFilter, deployFilter, hostFilter, search]);
 
+  // Fetch diff stats after projects load (non-blocking)
+  useEffect(() => {
+    if (projects.length > 0 && projects.every((p) => p.lines_added == null)) {
+      loadDiffStats();
+    }
+  }, [projects.length]);
+
   useEffect(() => {
     if (workspaceReady) {
-      invoke<{ deploy_platforms: string[]; hosts: string[] }>("get_filter_options").then(setFilterOptions);
+      const t = perfStart("get_filter_options");
+      invoke<{ deploy_platforms: string[]; hosts: string[] }>("get_filter_options").then((opts) => {
+        perfEnd("get_filter_options", t);
+        setFilterOptions(opts);
+      });
     }
   }, [workspaceReady, projects]);
 
@@ -118,6 +177,13 @@ export default function App() {
     await load();
   };
 
+  const handleWorkspaceChanged = async () => {
+    const config = await invoke<WorkspaceConfig>("get_workspace_config");
+    setWorkspaceReady(config.is_configured);
+    setWorkspacePath(config.workspace_path);
+    setView("projects");
+  };
+
   // Loading state while checking config
   if (workspaceReady === null) {
     return <div className="h-screen bg-background" />;
@@ -140,33 +206,43 @@ export default function App() {
           categoryFilter={categoryFilter}
           deployFilter={deployFilter}
           hostFilter={hostFilter}
-          onStatusFilter={setStatusFilter}
-          onCategoryFilter={setCategoryFilter}
-          onDeployFilter={setDeployFilter}
-          onHostFilter={setHostFilter}
+          onStatusFilter={(s) => { setView("projects"); setStatusFilter(s); }}
+          onCategoryFilter={(b) => { setView("projects"); setCategoryFilter(b); }}
+          onDeployFilter={(d) => { setView("projects"); setDeployFilter(d); }}
+          onHostFilter={(h) => { setView("projects"); setHostFilter(h); }}
           counts={projects}
           filterOptions={filterOptions}
           updateInfo={updateInfo}
           onInstallUpdate={handleInstallUpdate}
           installing={installing}
+          onOpenSettings={() => setView("settings")}
+          activeView={view}
         />
 
         <SidebarInset className="min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">
-          <div className="m-2 min-h-0 flex-1">
-            <ProjectTable
-              projects={projects}
-              selected={selected}
-              onSelect={handleSelect}
-              search={search}
-              onSearch={setSearch}
-              onSync={handleSync}
-              onNewProject={() => setNewProjectOpen(true)}
-              syncing={syncing}
-              loading={loading}
-              onStatusChange={handleStatusChange}
-              onDeleteSelected={handleDeleteSelected}
+          {view === "settings" ? (
+            <Settings
+              workspacePath={workspacePath}
+              onWorkspaceChanged={handleWorkspaceChanged}
+              onBack={() => setView("projects")}
             />
-          </div>
+          ) : (
+            <div className="m-2 min-h-0 flex-1">
+              <ProjectTable
+                projects={projects}
+                selected={selected}
+                onSelect={handleSelect}
+                search={search}
+                onSearch={setSearch}
+                onSync={handleSync}
+                onNewProject={() => setNewProjectOpen(true)}
+                syncing={syncing}
+                loading={loading}
+                onStatusChange={handleStatusChange}
+                onDeleteSelected={handleDeleteSelected}
+              />
+            </div>
+          )}
         </SidebarInset>
 
         <ProjectDetail

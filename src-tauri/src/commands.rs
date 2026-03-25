@@ -417,20 +417,11 @@ pub fn get_projects(
         where_clause
     );
 
-    let ws = workspace(&state)?;
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
-            let folder_key: String = row.get(0)?;
-            let diff_path = ws.join(&folder_key);
-            let repo_path = repo_path_for_folder(&diff_path);
-            let (lines_added, lines_removed) = repo_path
-                .as_deref()
-                .map(git_diff_line_stats)
-                .unwrap_or((None, None));
-
             Ok(Project {
-                folder_key,
+                folder_key: row.get(0)?,
                 folder_name: row.get(1)?,
                 description: row.get(2)?,
                 status: row.get(3)?,
@@ -440,8 +431,8 @@ pub fn get_projects(
                 repo_owner: row.get(7)?,
                 commit_count: row.get(8)?,
                 last_commit_date: row.get(9)?,
-                lines_added,
-                lines_removed,
+                lines_added: None,
+                lines_removed: None,
                 days_since_last_commit: row.get(10)?,
                 deployment: row.get(11)?,
                 production_url: row.get(12)?,
@@ -862,4 +853,62 @@ pub fn run_sync_scripts(
     } else {
         Err(format!("Script failed:\n{}\n{}", stdout, stderr))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Lazy diff stats – called after initial table render
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct DiffStat {
+    pub folder_key: String,
+    pub lines_added: Option<i64>,
+    pub lines_removed: Option<i64>,
+}
+
+#[tauri::command]
+pub fn get_diff_stats(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<DiffStat>, String> {
+    let ws = workspace(&state)?;
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare("SELECT folder_key FROM project_metadata ORDER BY folder_key")
+        .map_err(|e| e.to_string())?;
+    let keys: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    use std::thread;
+
+    let results: Vec<DiffStat> = thread::scope(|s| {
+        let handles: Vec<_> = keys
+            .iter()
+            .map(|key| {
+                let ws = &ws;
+                s.spawn(move || {
+                    let diff_path = ws.join(key);
+                    let repo_path = repo_path_for_folder(&diff_path);
+                    let (added, removed) = repo_path
+                        .as_deref()
+                        .map(git_diff_line_stats)
+                        .unwrap_or((None, None));
+                    DiffStat {
+                        folder_key: key.clone(),
+                        lines_added: added,
+                        lines_removed: removed,
+                    }
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .collect()
+    });
+
+    Ok(results)
 }

@@ -93,7 +93,7 @@ export default function WorkspaceSetup({ onConfigured }: Props) {
         </div>
 
         <p className="text-[11px] text-muted-foreground/60">
-          You can change this later in the app settings.
+          You can change this later from the Settings page in the sidebar.
         </p>
       </div>
     </div>

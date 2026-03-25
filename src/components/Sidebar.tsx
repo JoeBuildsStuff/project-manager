@@ -12,6 +12,7 @@ import {
   Home,
   Minus,
   GitBranch,
+  Settings,
 } from "lucide-react";
 import {
   Sidebar,
@@ -52,6 +53,8 @@ interface Props {
   updateInfo?: UpdateInfo | null;
   onInstallUpdate?: () => void;
   installing?: boolean;
+  onOpenSettings?: () => void;
+  activeView?: string;
 }
 
 const STATUS_OPTIONS: {
@@ -107,6 +110,8 @@ export default function AppSidebar({
   updateInfo,
   onInstallUpdate,
   installing,
+  onOpenSettings,
+  activeView,
 }: Props) {
   const countFor = (s: StatusFilter) =>
     s === "all" ? counts.length : counts.filter((p) => p.status === s).length;
@@ -278,8 +283,8 @@ export default function AppSidebar({
         </SidebarGroup>
       </SidebarContent>
 
-      {updateInfo && (
-        <SidebarFooter className="px-2 py-2">
+      <SidebarFooter className="px-2 py-2 space-y-1">
+        {updateInfo && (
           <button
             onClick={onInstallUpdate}
             disabled={installing}
@@ -290,8 +295,20 @@ export default function AppSidebar({
               {installing ? "Installing..." : `Update v${updateInfo.version} ready — Restart`}
             </span>
           </button>
-        </SidebarFooter>
-      )}
+        )}
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              isActive={activeView === "settings"}
+              onClick={onOpenSettings}
+              tooltip="Settings"
+            >
+              <Settings className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span>Settings</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
 
       <SidebarRail />
     </Sidebar>
