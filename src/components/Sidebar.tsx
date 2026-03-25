@@ -16,6 +16,7 @@ import {
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -27,9 +28,15 @@ import {
   SidebarRail,
   SidebarSeparator,
 } from "@/components/ui/sidebar";
+import { Download } from "lucide-react";
 import { SidebarLogo } from "@/components/app-sidebar-logo";
 import { cn } from "@/lib/utils";
 import type { Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter } from "../types";
+
+interface UpdateInfo {
+  version: string;
+  body?: string;
+}
 
 interface Props {
   statusFilter: StatusFilter;
@@ -42,6 +49,9 @@ interface Props {
   onHostFilter: (h: HostFilter) => void;
   counts: Project[];
   filterOptions: { deploy_platforms: string[]; hosts: string[] };
+  updateInfo?: UpdateInfo | null;
+  onInstallUpdate?: () => void;
+  installing?: boolean;
 }
 
 const STATUS_OPTIONS: {
@@ -94,6 +104,9 @@ export default function AppSidebar({
   onHostFilter,
   counts,
   filterOptions,
+  updateInfo,
+  onInstallUpdate,
+  installing,
 }: Props) {
   const countFor = (s: StatusFilter) =>
     s === "all" ? counts.length : counts.filter((p) => p.status === s).length;
@@ -264,6 +277,21 @@ export default function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+
+      {updateInfo && (
+        <SidebarFooter className="px-2 py-2">
+          <button
+            onClick={onInstallUpdate}
+            disabled={installing}
+            className="flex w-full items-center gap-2 rounded-md bg-blue-500/10 px-3 py-2 text-left text-xs text-blue-400 hover:bg-blue-500/20 disabled:opacity-60 transition-colors"
+          >
+            <Download className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate">
+              {installing ? "Installing..." : `Update v${updateInfo.version} ready — Restart`}
+            </span>
+          </button>
+        </SidebarFooter>
+      )}
 
       <SidebarRail />
     </Sidebar>

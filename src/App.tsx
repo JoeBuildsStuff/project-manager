@@ -13,8 +13,15 @@ interface WorkspaceConfig {
   is_configured: boolean;
 }
 
+interface UpdateInfo {
+  version: string;
+  body?: string;
+}
+
 export default function App() {
   const [workspaceReady, setWorkspaceReady] = useState<boolean | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [installing, setInstalling] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<Project | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -34,6 +41,22 @@ export default function App() {
       setWorkspaceReady(config.is_configured);
     });
   }, []);
+
+  // Check for updates silently on launch
+  useEffect(() => {
+    invoke<UpdateInfo | null>("check_for_update").then((info) => {
+      if (info) setUpdateInfo(info);
+    }).catch(() => {});
+  }, []);
+
+  const handleInstallUpdate = async () => {
+    setInstalling(true);
+    try {
+      await invoke("install_update");
+    } catch {
+      setInstalling(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -123,6 +146,9 @@ export default function App() {
           onHostFilter={setHostFilter}
           counts={projects}
           filterOptions={filterOptions}
+          updateInfo={updateInfo}
+          onInstallUpdate={handleInstallUpdate}
+          installing={installing}
         />
 
         <SidebarInset className="min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">

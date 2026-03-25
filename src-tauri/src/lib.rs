@@ -10,6 +10,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(WorkspaceState::new())
+        .manage(UpdateState::new())
         .invoke_handler(tauri::generate_handler![
             get_workspace_config,
             set_workspace_path,
@@ -27,6 +28,8 @@ pub fn run() {
             run_sync_scripts,
             get_git_status,
             get_delete_guardrails,
+            check_for_update,
+            install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

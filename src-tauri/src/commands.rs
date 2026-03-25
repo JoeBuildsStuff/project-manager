@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
+use tauri_plugin_updater::UpdaterExt;
 
 // ---------------------------------------------------------------------------
 // Managed state – set once on startup (or during onboarding), read by all cmds
@@ -24,6 +25,68 @@ impl WorkspaceState {
             path: RwLock::new(path),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Update state – holds a pending update between check and install
+// ---------------------------------------------------------------------------
+
+pub struct UpdateState {
+    pub pending: Mutex<Option<tauri_plugin_updater::Update>>,
+}
+
+impl UpdateState {
+    pub fn new() -> Self {
+        Self { pending: Mutex::new(None) }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub body: Option<String>,
+}
+
+#[tauri::command]
+pub async fn check_for_update(
+    app: tauri::AppHandle,
+    update_state: tauri::State<'_, UpdateState>,
+) -> Result<Option<UpdateInfo>, String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await {
+        Ok(Some(update)) => {
+            let info = UpdateInfo {
+                version: update.version.clone(),
+                body: update.body.clone(),
+            };
+            *update_state.pending.lock().map_err(|e| e.to_string())? = Some(update);
+            Ok(Some(info))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn install_update(
+    app: tauri::AppHandle,
+    update_state: tauri::State<'_, UpdateState>,
+) -> Result<(), String> {
+    let update = update_state
+        .pending
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take();
+
+    if let Some(update) = update {
+        update
+            .download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|e| e.to_string())?;
+        app.restart();
+    }
+
+    Ok(())
 }
 
 fn workspace(state: &WorkspaceState) -> Result<PathBuf, String> {
