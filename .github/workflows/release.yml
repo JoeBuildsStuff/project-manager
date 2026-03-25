@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
 
+# tauri-action creates the GitHub Release and uploads artifacts; the default
+# GITHUB_TOKEN is often read-only unless contents write is granted.
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
