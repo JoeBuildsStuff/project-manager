@@ -62,3 +62,49 @@ jobs:
           releaseBody: "See the commits for changes in this release."
           releaseDraft: false
           prerelease: false
+
+      - name: Upload updater JSON
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+
+          # Find the .sig file
+          SIG_FILE=$(find "$BUNDLE_DIR" -name "*.tar.gz.sig" | head -1)
+          echo "Found sig file: $SIG_FILE"
+          if [ -z "$SIG_FILE" ]; then
+            echo "ERROR: No .sig file found!"
+            exit 1
+          fi
+          SIGNATURE=$(cat "$SIG_FILE")
+
+          # Get the tar.gz browser download URL from the release
+          TAR_URL=$(gh release view "$GITHUB_REF_NAME" --json assets \
+            --jq '.assets[] | select(.name | endswith(".tar.gz")) | .browserDownloadUrl')
+          echo "Tar URL: $TAR_URL"
+
+          # Create latest.json for the Tauri updater
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "See the commits for changes in this release." \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg signature "$SIGNATURE" \
+            --arg url "$TAR_URL" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": {
+                  signature: $signature,
+                  url: $url
+                }
+              }
+            }' > latest.json
+
+          echo "Generated latest.json:"
+          cat latest.json
+
+          # Upload to the release
+          gh release upload "$GITHUB_REF_NAME" latest.json --clobber
