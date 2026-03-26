@@ -5,8 +5,6 @@ on:
     tags:
       - "v*"
 
-# tauri-action creates the GitHub Release and uploads artifacts; the default
-# GITHUB_TOKEN is often read-only unless contents write is granted.
 permissions:
   contents: write
 
@@ -39,11 +37,8 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "Setting version to $VERSION"
-          # Update tauri.conf.json
           sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-          # Update Cargo.toml
           sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
-          # Update package.json
           sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
           cat src-tauri/tauri.conf.json | head -5
 
@@ -51,37 +46,51 @@ jobs:
         run: pnpm install
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Project Manager ${{ github.ref_name }}"
-          releaseBody: "See the commits for changes in this release."
-          releaseDraft: false
-          prerelease: false
+        run: pnpm tauri build
 
-      - name: Upload updater JSON
+      - name: Create release and upload artifacts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           BUNDLE_DIR="src-tauri/target/release/bundle"
 
-          # Find the .sig file
-          SIG_FILE=$(find "$BUNDLE_DIR" -name "*.tar.gz.sig" | head -1)
-          echo "Found sig file: $SIG_FILE"
-          if [ -z "$SIG_FILE" ]; then
+          echo "=== Bundle contents ==="
+          find "$BUNDLE_DIR" -type f | head -30
+
+          # Locate artifacts
+          DMG=$(find "$BUNDLE_DIR/dmg" -name "*.dmg" | head -1)
+          TAR=$(find "$BUNDLE_DIR/macos" -name "*.tar.gz" | head -1)
+          SIG=$(find "$BUNDLE_DIR/macos" -name "*.tar.gz.sig" | head -1)
+
+          echo "DMG: $DMG"
+          echo "TAR: $TAR"
+          echo "SIG: $SIG"
+
+          if [ -z "$SIG" ]; then
             echo "ERROR: No .sig file found!"
             exit 1
           fi
-          SIGNATURE=$(cat "$SIG_FILE")
 
-          # Get the tar.gz browser download URL from the release
+          SIGNATURE=$(cat "$SIG")
+          echo "Signature: $SIGNATURE"
+
+          # Create the GitHub release
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Project Manager $GITHUB_REF_NAME" \
+            --notes "See the commits for changes in this release."
+
+          # Upload DMG and tar.gz
+          gh release upload "$GITHUB_REF_NAME" "$DMG"
+          gh release upload "$GITHUB_REF_NAME" "$TAR"
+
+          # Get the tar.gz download URL
+          TAR_NAME=$(basename "$TAR")
           TAR_URL=$(gh release view "$GITHUB_REF_NAME" --json assets \
-            --jq '.assets[] | select(.name | endswith(".tar.gz")) | .browserDownloadUrl')
+            --jq ".assets[] | select(.name == \"$TAR_NAME\") | .browserDownloadUrl")
           echo "Tar URL: $TAR_URL"
 
           # Create latest.json for the Tauri updater
@@ -103,8 +112,8 @@ jobs:
               }
             }' > latest.json
 
-          echo "Generated latest.json:"
+          echo "=== latest.json ==="
           cat latest.json
 
-          # Upload to the release
-          gh release upload "$GITHUB_REF_NAME" latest.json --clobber
+          # Upload latest.json
+          gh release upload "$GITHUB_REF_NAME" latest.json
