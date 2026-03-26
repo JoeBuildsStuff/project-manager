@@ -87,10 +87,9 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" "$DMG"
           gh release upload "$GITHUB_REF_NAME" "$TAR"
 
-          # Get the tar.gz download URL
-          TAR_NAME=$(basename "$TAR")
+          # Get the tar.gz download URL (GitHub replaces spaces with dots in asset names)
           TAR_URL=$(gh release view "$GITHUB_REF_NAME" --json assets \
-            --jq ".assets[] | select(.name == \"$TAR_NAME\") | .browserDownloadUrl")
+            --jq '.assets[] | select(.name | endswith(".tar.gz")) | .browserDownloadUrl')
           echo "Tar URL: $TAR_URL"
 
           # Create latest.json for the Tauri updater
