@@ -43,6 +43,18 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Sync version from git tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Setting version to $VERSION"
+          # Update tauri.conf.json
+          sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
+          # Update Cargo.toml
+          sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+          # Update package.json
+          sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" package.json
+          cat src-tauri/tauri.conf.json | head -5
+
       - name: Install frontend dependencies
         run: pnpm install
 
