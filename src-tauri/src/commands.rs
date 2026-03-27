@@ -834,25 +834,359 @@ pub fn create_project(
     Ok(())
 }
 
-#[tauri::command]
-pub fn run_sync_scripts(
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<String, String> {
-    let ws = workspace(&state)?;
-    let output = Command::new("python3")
-        .args(["scripts/update-readme-repo-from-git.py"])
-        .current_dir(&ws)
-        .output()
-        .map_err(|e| e.to_string())?;
+// ---------------------------------------------------------------------------
+// Native workspace sync – discovers projects and populates the DB
+// ---------------------------------------------------------------------------
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+const SKIP_FOLDERS: &[&str] = &[
+    "node_modules", "logs", "__pycache__", ".venv", "venv",
+    "target", "dist", "build", ".next", ".nuxt", ".cache",
+    "scripts",
+];
 
-    if output.status.success() {
-        Ok(stdout)
+struct DiscoveredFolder {
+    folder_key: String,
+    folder_name: String,
+    path: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SyncResult {
+    pub projects_synced: usize,
+    pub projects_pruned: usize,
+}
+
+/// Bucket folders use a `NN-name` pattern (e.g. `01-active`, `02-reference`).
+/// Their children become projects instead of the bucket itself.
+fn is_bucket_folder(name: &str) -> bool {
+    if let Some(pos) = name.find('-') {
+        pos > 0 && name[..pos].chars().all(|c| c.is_ascii_digit())
     } else {
-        Err(format!("Script failed:\n{}\n{}", stdout, stderr))
+        false
     }
+}
+
+fn discover_folders(ws: &Path) -> Result<Vec<DiscoveredFolder>, String> {
+    let mut result = Vec::new();
+    let entries = fs::read_dir(ws).map_err(|e| format!("Failed to read workspace: {e}"))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let name = name.to_string();
+
+        if name.starts_with('.') || SKIP_FOLDERS.contains(&name.as_str()) {
+            continue;
+        }
+
+        if is_bucket_folder(&name) {
+            // Iterate children of the bucket folder
+            if let Ok(children) = fs::read_dir(&path) {
+                for child in children.flatten() {
+                    let cp = child.path();
+                    if !cp.is_dir() {
+                        continue;
+                    }
+                    let Some(cn) = cp.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    let cn = cn.to_string();
+                    if cn.starts_with('.') || SKIP_FOLDERS.contains(&cn.as_str()) {
+                        continue;
+                    }
+                    result.push(DiscoveredFolder {
+                        folder_key: format!("{}/{}", name, cn),
+                        folder_name: cn,
+                        path: cp,
+                    });
+                }
+            }
+        } else {
+            result.push(DiscoveredFolder {
+                folder_key: name.clone(),
+                folder_name: name,
+                path,
+            });
+        }
+    }
+
+    Ok(result)
+}
+
+fn has_readme(path: &Path) -> bool {
+    path.join("README.md").exists() || path.join("readme.md").exists()
+}
+
+fn detect_host(remote_url: &str) -> String {
+    let url = remote_url.to_lowercase();
+    if url.contains("github.com") {
+        "GitHub".into()
+    } else if url.contains("gitlab.com") {
+        "GitLab".into()
+    } else if url.contains("bitbucket.org") {
+        "Bitbucket".into()
+    } else if url.contains("gitea") || url.contains("forgejo") {
+        "Gitea".into()
+    } else {
+        "Other".into()
+    }
+}
+
+fn extract_owner_repo(remote_url: &str) -> Option<String> {
+    let url = remote_url.trim();
+
+    // SSH: git@github.com:owner/repo.git
+    if let Some(rest) = url.strip_prefix("git@") {
+        if let Some((_host, path)) = rest.split_once(':') {
+            return Some(path.trim_end_matches(".git").to_string());
+        }
+    }
+
+    // HTTPS: https://github.com/owner/repo.git
+    let without_proto = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+
+    let parts: Vec<&str> = without_proto.split('/').collect();
+    if parts.len() >= 3 {
+        let owner = parts[parts.len() - 2];
+        let repo = parts[parts.len() - 1].trim_end_matches(".git");
+        return Some(format!("{}/{}", owner, repo));
+    }
+
+    None
+}
+
+fn git_commit_stats(repo_path: &Path) -> (Option<i64>, Option<String>, Option<i64>) {
+    let path_str = match repo_path.to_str() {
+        Some(s) => s,
+        None => return (None, None, None),
+    };
+
+    let commit_count = Command::new("git")
+        .args(["-C", path_str, "rev-list", "--count", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<i64>()
+                    .ok()
+            } else {
+                None
+            }
+        });
+
+    // ISO date for display
+    let last_commit_date = Command::new("git")
+        .args(["-C", path_str, "log", "-1", "--format=%aI"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            } else {
+                None
+            }
+        });
+
+    // Unix timestamp for days-since calculation (avoids chrono dependency)
+    let days_since = Command::new("git")
+        .args(["-C", path_str, "log", "-1", "--format=%at"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<i64>()
+                    .ok()
+            } else {
+                None
+            }
+        })
+        .map(|ts| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            (now - ts) / 86400
+        });
+
+    (commit_count, last_commit_date, days_since)
+}
+
+fn extract_readme_description(folder_path: &Path) -> Option<String> {
+    let readme_path = if folder_path.join("README.md").exists() {
+        folder_path.join("README.md")
+    } else if folder_path.join("readme.md").exists() {
+        folder_path.join("readme.md")
+    } else {
+        return None;
+    };
+
+    let content = fs::read_to_string(&readme_path).ok()?;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // Skip badges, images, and HTML tags
+        if trimmed.starts_with("![")
+            || trimmed.starts_with("[![")
+            || trimmed.starts_with('<')
+        {
+            continue;
+        }
+        return Some(trimmed.chars().take(200).collect());
+    }
+
+    None
+}
+
+struct ProjectData {
+    folder_key: String,
+    folder_name: String,
+    repo: Option<String>,
+    host: Option<String>,
+    repo_owner: Option<String>,
+    commit_count: Option<i64>,
+    last_commit_date: Option<String>,
+    days_since_last_commit: Option<i64>,
+    description: Option<String>,
+}
+
+fn gather_metadata(folder: &DiscoveredFolder) -> Option<ProjectData> {
+    if !has_readme(&folder.path) {
+        return None;
+    }
+
+    let repo_path = repo_path_for_folder(&folder.path);
+    let remote_url = repo_path
+        .as_ref()
+        .and_then(|rp| git_remote_url(rp, "origin").or_else(|| git_remote_url(rp, "upstream")));
+    let host = remote_url.as_ref().map(|u| detect_host(u));
+    let owner_repo = remote_url.as_ref().and_then(|u| extract_owner_repo(u));
+    let (commit_count, last_commit_date, days_since) = repo_path
+        .as_ref()
+        .map(|rp| git_commit_stats(rp))
+        .unwrap_or((None, None, None));
+    let description = extract_readme_description(&folder.path);
+
+    Some(ProjectData {
+        folder_key: folder.folder_key.clone(),
+        folder_name: folder.folder_name.clone(),
+        repo: remote_url,
+        host,
+        repo_owner: owner_repo,
+        commit_count,
+        last_commit_date,
+        days_since_last_commit: days_since,
+        description,
+    })
+}
+
+fn prune_orphaned_rows(conn: &Connection, ws: &Path) -> Result<usize, String> {
+    let mut stmt = conn
+        .prepare("SELECT folder_key FROM project_metadata")
+        .map_err(|e| e.to_string())?;
+    let keys: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut pruned = 0;
+    for key in &keys {
+        if !ws.join(key).is_dir() {
+            conn.execute(
+                "DELETE FROM project_metadata WHERE folder_key = ?1",
+                [key],
+            )
+            .map_err(|e| e.to_string())?;
+            pruned += 1;
+        }
+    }
+
+    Ok(pruned)
+}
+
+#[tauri::command]
+pub fn sync_workspace(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<SyncResult, String> {
+    let ws = workspace(&state)?;
+    let conn = open_db(&state)?;
+
+    // 1. Discover project folders (bucket folders are expanded)
+    let folders = discover_folders(&ws)?;
+
+    // 2. Gather git + README metadata in parallel
+    let synced_projects: Vec<ProjectData> = std::thread::scope(|s| {
+        let handles: Vec<_> = folders
+            .iter()
+            .map(|f| s.spawn(|| gather_metadata(f)))
+            .collect();
+
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok().flatten())
+            .collect()
+    });
+
+    // 3. Upsert into DB (preserves user-managed fields: status, category, deployment, etc.)
+    let synced = synced_projects.len();
+    for p in &synced_projects {
+        conn.execute(
+            "INSERT INTO project_metadata
+                (folder_key, folder_name, repo, host, repo_owner,
+                 commit_count, last_commit_date, days_since_last_commit, description)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(folder_key) DO UPDATE SET
+                folder_name = excluded.folder_name,
+                repo = excluded.repo,
+                host = excluded.host,
+                repo_owner = excluded.repo_owner,
+                commit_count = excluded.commit_count,
+                last_commit_date = excluded.last_commit_date,
+                days_since_last_commit = excluded.days_since_last_commit,
+                description = excluded.description,
+                updated_at = datetime('now')",
+            rusqlite::params![
+                p.folder_key,
+                p.folder_name,
+                p.repo,
+                p.host,
+                p.repo_owner,
+                p.commit_count,
+                p.last_commit_date,
+                p.days_since_last_commit,
+                p.description,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // 4. Prune rows whose folders no longer exist on disk
+    let pruned = prune_orphaned_rows(&conn, &ws)?;
+
+    Ok(SyncResult {
+        projects_synced: synced,
+        projects_pruned: pruned,
+    })
 }
 
 // ---------------------------------------------------------------------------

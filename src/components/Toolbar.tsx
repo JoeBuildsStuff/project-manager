@@ -19,6 +19,7 @@ interface Props {
   onNewProject: () => void;
   syncing: boolean;
   syncMsg: string;
+  syncIsError: boolean;
   loading: boolean;
 }
 
@@ -30,6 +31,7 @@ export default function Toolbar({
   onNewProject,
   syncing,
   syncMsg,
+  syncIsError,
   loading,
 }: Props) {
   return (
@@ -58,7 +60,7 @@ export default function Toolbar({
           <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
         )}
         {syncMsg && !syncing && (
-          <span className="max-w-[180px] truncate text-[11px] text-muted-foreground">
+          <span className={`max-w-[180px] truncate text-[11px] ${syncIsError ? "text-destructive" : "text-muted-foreground"}`}>
             {syncMsg}
           </span>
         )}

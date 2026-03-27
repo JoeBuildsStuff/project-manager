@@ -46,6 +46,8 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+  const [syncIsError, setSyncIsError] = useState(false);
   const [filterOptions, setFilterOptions] = useState<{ deploy_platforms: string[]; hosts: string[] }>({ deploy_platforms: [], hosts: [] });
 
   // Check workspace config on mount
@@ -149,12 +151,18 @@ export default function App() {
 
   const handleSync = async () => {
     setSyncing(true);
+    setSyncMsg("");
+    setSyncIsError(false);
     try {
-      await invoke<string>("run_sync_scripts");
-    } catch {
+      const result = await invoke<{ projects_synced: number; projects_pruned: number }>("sync_workspace");
+      setSyncMsg(`Synced ${result.projects_synced} projects`);
+    } catch (e) {
+      setSyncMsg(String(e));
+      setSyncIsError(true);
     } finally {
       setSyncing(false);
       await load();
+      loadDiffStats();
     }
   };
 
@@ -238,6 +246,8 @@ export default function App() {
                 onNewProject={() => setNewProjectOpen(true)}
                 syncing={syncing}
                 loading={loading}
+                syncMsg={syncMsg}
+                syncIsError={syncIsError}
                 onStatusChange={handleStatusChange}
                 onDeleteSelected={handleDeleteSelected}
               />

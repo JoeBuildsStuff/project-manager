@@ -134,7 +134,7 @@ pub fn run() {
             open_in_finder,
             open_in_vscode,
             open_url,
-            run_sync_scripts,
+            sync_workspace,
             get_git_status,
             get_delete_guardrails,
             get_diff_stats,

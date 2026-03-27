@@ -60,6 +60,8 @@ interface Props {
   onNewProject: () => void;
   syncing: boolean;
   loading: boolean;
+  syncMsg: string;
+  syncIsError: boolean;
   onStatusChange: (folder_key: string, status: string) => void;
   onDeleteSelected: (folderKeys: string[]) => Promise<void>;
 }
@@ -288,6 +290,8 @@ export default function ProjectTable({
   onNewProject,
   syncing,
   loading,
+  syncMsg,
+  syncIsError,
   onDeleteSelected,
 }: Props) {
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -363,7 +367,8 @@ export default function ProjectTable({
         onSync={onSync}
         onNewProject={onNewProject}
         syncing={syncing}
-        syncMsg=""
+        syncMsg={syncMsg}
+        syncIsError={syncIsError}
         loading={loading}
       />
 
@@ -453,8 +458,10 @@ export default function ProjectTable({
                     key={row.id}
                     data-state={row.getIsSelected() ? "selected" : undefined}
                     className={cn(
+                      "cursor-pointer",
                       selected?.folder_key === p.folder_key && "bg-accent/20",
                     )}
+                    onClick={() => onSelect(p)}
                   >
                     {row.getVisibleCells().map((cell) => (
                       <TableCell
