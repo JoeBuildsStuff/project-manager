@@ -45,6 +45,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { Project } from "../types";
 import { CategoryBadge, DeployBadge, StatusBadge } from "./StatusBadge";
 import DeleteProjectDialog from "./DeleteProjectDialog";
@@ -416,7 +417,35 @@ export default function ProjectTable({
       )}
 
       {/* Table */}
-      {projects.length === 0 ? (
+      {loading && projects.length === 0 ? (
+        <div className="mt-1 flex-1 rounded-md border border-border">
+          {/* Skeleton header */}
+          <div className="flex items-center gap-3 border-b border-border px-3 py-2.5">
+            <Skeleton className="h-4 w-4 rounded" />
+            <Skeleton className="h-3.5 w-[120px]" />
+            <Skeleton className="h-3.5 w-[90px]" />
+            <Skeleton className="h-3.5 w-[220px]" />
+            <Skeleton className="h-3.5 w-[80px]" />
+            <Skeleton className="h-3.5 w-[80px]" />
+            <Skeleton className="h-3.5 w-[70px]" />
+          </div>
+          {/* Skeleton rows */}
+          {Array.from({ length: 12 }).map((_, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-3 border-b border-border/50 px-3 py-2.5"
+            >
+              <Skeleton className="h-4 w-4 rounded" />
+              <Skeleton className="h-3.5 w-[120px]" />
+              <Skeleton className="h-3.5 w-[90px]" />
+              <Skeleton className="h-3.5 w-[220px]" />
+              <Skeleton className="h-3.5 w-[80px]" />
+              <Skeleton className="h-3.5 w-[80px]" />
+              <Skeleton className="h-3.5 w-[70px]" />
+            </div>
+          ))}
+        </div>
+      ) : projects.length === 0 ? (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
           No projects match the current filter.
         </div>

@@ -23,7 +23,6 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
@@ -32,7 +31,7 @@ import {
 import { Download } from "lucide-react";
 import { SidebarLogo } from "@/components/app-sidebar-logo";
 import { cn } from "@/lib/utils";
-import type { Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter } from "../types";
+import type { StatusFilter, CategoryFilter, DeployFilter, HostFilter } from "../types";
 
 interface UpdateInfo {
   version: string;
@@ -48,7 +47,6 @@ interface Props {
   onCategoryFilter: (b: CategoryFilter) => void;
   onDeployFilter: (d: DeployFilter) => void;
   onHostFilter: (h: HostFilter) => void;
-  counts: Project[];
   filterOptions: { deploy_platforms: string[]; hosts: string[] };
   updateInfo?: UpdateInfo | null;
   onInstallUpdate?: () => void;
@@ -105,7 +103,6 @@ export default function AppSidebar({
   onCategoryFilter,
   onDeployFilter,
   onHostFilter,
-  counts,
   filterOptions,
   updateInfo,
   onInstallUpdate,
@@ -113,15 +110,6 @@ export default function AppSidebar({
   onOpenSettings,
   activeView,
 }: Props) {
-  const countFor = (s: StatusFilter) =>
-    s === "all" ? counts.length : counts.filter((p) => p.status === s).length;
-
-  const countForDeploy = (d: string) =>
-    d === "all" ? counts.length : counts.filter((p) => p.deploy_platform === d).length;
-
-  const countForHost = (h: string) =>
-    h === "all" ? counts.length : counts.filter((p) => p.host === h).length;
-
   return (
     <Sidebar
       collapsible="icon"
@@ -138,14 +126,13 @@ export default function AppSidebar({
             <SidebarMenu>
               {STATUS_OPTIONS.map((opt) => {
                 const Icon = opt.icon;
-                const n = countFor(opt.value);
                 return (
                   <SidebarMenuItem key={opt.value}>
                     <SidebarMenuButton
                       isActive={statusFilter === opt.value}
                       onClick={() => onStatusFilter(opt.value)}
                       className="w-full"
-                      tooltip={`${opt.label} (${n})`}
+                      tooltip={opt.label}
                     >
                       <Icon
                         className={cn(
@@ -158,9 +145,6 @@ export default function AppSidebar({
                       />
                       <span>{opt.label}</span>
                     </SidebarMenuButton>
-                    <SidebarMenuBadge className="bg-sidebar-accent text-[10px] text-muted-foreground">
-                      {n}
-                    </SidebarMenuBadge>
                   </SidebarMenuItem>
                 );
               })}
@@ -210,28 +194,21 @@ export default function AppSidebar({
                   <CircleDot className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
                   <span>All platforms</span>
                 </SidebarMenuButton>
-                <SidebarMenuBadge className="bg-sidebar-accent text-[10px] text-muted-foreground">
-                  {countForDeploy("all")}
-                </SidebarMenuBadge>
               </SidebarMenuItem>
               {filterOptions.deploy_platforms.map((d) => {
                 const Icon = DEPLOY_ICONS[d] ?? Server;
                 const color = DEPLOY_COLORS[d] ?? "text-muted-foreground";
-                const n = countForDeploy(d);
                 return (
                   <SidebarMenuItem key={d}>
                     <SidebarMenuButton
                       isActive={deployFilter === d}
                       onClick={() => onDeployFilter(d)}
                       className="w-full"
-                      tooltip={`${d} (${n})`}
+                      tooltip={d}
                     >
                       <Icon className={cn("h-3.5 w-3.5 shrink-0", color)} />
                       <span className="capitalize">{d}</span>
                     </SidebarMenuButton>
-                    <SidebarMenuBadge className="bg-sidebar-accent text-[10px] text-muted-foreground">
-                      {n}
-                    </SidebarMenuBadge>
                   </SidebarMenuItem>
                 );
               })}
@@ -255,26 +232,19 @@ export default function AppSidebar({
                   <CircleDot className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
                   <span>All hosts</span>
                 </SidebarMenuButton>
-                <SidebarMenuBadge className="bg-sidebar-accent text-[10px] text-muted-foreground">
-                  {countForHost("all")}
-                </SidebarMenuBadge>
               </SidebarMenuItem>
               {filterOptions.hosts.map((h) => {
-                const n = countForHost(h);
                 return (
                   <SidebarMenuItem key={h}>
                     <SidebarMenuButton
                       isActive={hostFilter === h}
                       onClick={() => onHostFilter(h)}
                       className="w-full"
-                      tooltip={`${h} (${n})`}
+                      tooltip={h}
                     >
                       <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       <span className="capitalize">{h}</span>
                     </SidebarMenuButton>
-                    <SidebarMenuBadge className="bg-sidebar-accent text-[10px] text-muted-foreground">
-                      {n}
-                    </SidebarMenuBadge>
                   </SidebarMenuItem>
                 );
               })}

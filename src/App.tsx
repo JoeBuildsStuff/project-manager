@@ -44,7 +44,7 @@ export default function App() {
   const [deployFilter, setDeployFilter] = useState<DeployFilter>("all");
   const [hostFilter, setHostFilter] = useState<HostFilter>("all");
   const [search, setSearch] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
   const [syncIsError, setSyncIsError] = useState(false);
@@ -176,9 +176,9 @@ export default function App() {
 
   // Fetch diff stats after projects load (non-blocking)
   useEffect(() => {
-    if (allProjects.length > 0 && allProjects.every((p) => p.lines_added == null)) {
-      loadDiffStats();
-    }
+    // if (allProjects.length > 0 && allProjects.every((p) => p.lines_added == null)) {
+    //   loadDiffStats();
+    // }
   }, [allProjects.length]);
 
   const handleSync = async () => {
@@ -250,7 +250,6 @@ export default function App() {
           onCategoryFilter={(b) => { setView("projects"); setCategoryFilter(b); }}
           onDeployFilter={(d) => { setView("projects"); setDeployFilter(d); }}
           onHostFilter={(h) => { setView("projects"); setHostFilter(h); }}
-          counts={allProjects}
           filterOptions={filterOptions}
           updateInfo={updateInfo}
           onInstallUpdate={handleInstallUpdate}

@@ -39,11 +39,10 @@ export function DataTableColumnHeader<TData, TValue>({
     );
   }
 
-  // Only compute faceted values when the dropdown is open
+  // Only compute unique values when the dropdown is open
   let uniqueValues: (string | null)[] = [];
-  let facetedValues = new Map<unknown, number>();
   if (open && canFilter) {
-    facetedValues = column.getFacetedUniqueValues();
+    const facetedValues = column.getFacetedUniqueValues();
     uniqueValues = Array.from(facetedValues.keys())
       .map((v) => (v == null ? null : String(v)))
       .sort((a, b) => {
@@ -127,7 +126,6 @@ export function DataTableColumnHeader<TData, TValue>({
                 {uniqueValues.map((value) => {
                   const normalized = value ?? "__null__";
                   const checked = filterValue?.includes(normalized) ?? false;
-                  const count = facetedValues.get(value as unknown) ?? 0;
                   return (
                     <DropdownMenuCheckboxItem
                       key={normalized}
@@ -138,9 +136,6 @@ export function DataTableColumnHeader<TData, TValue>({
                     >
                       <span className="flex-1 truncate">
                         {value ?? <span className="italic text-muted-foreground/50">empty</span>}
-                      </span>
-                      <span className="ml-auto text-[10px] text-muted-foreground">
-                        {count}
                       </span>
                     </DropdownMenuCheckboxItem>
                   );
