@@ -209,6 +209,8 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
             deploy_platform   TEXT,
             vercel_team_slug  TEXT,
             vercel_project_name TEXT,
+            lines_added       INTEGER,
+            lines_removed     INTEGER,
             updated_at        TEXT DEFAULT (datetime('now')),
             created_at        TEXT DEFAULT (datetime('now'))
         );
@@ -228,6 +230,11 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
         );",
     )
     .map_err(|e| e.to_string())?;
+
+    // Idempotent migrations – silently ignored if column already exists
+    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN lines_added INTEGER", []);
+    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN lines_removed INTEGER", []);
+
     Ok(())
 }
 
@@ -442,7 +449,8 @@ pub fn get_projects(
         "SELECT folder_key, folder_name, description, status, category, repo, host, repo_owner,
                 commit_count, last_commit_date, days_since_last_commit,
                 deployment, production_url, deploy_platform,
-                vercel_team_slug, vercel_project_name
+                vercel_team_slug, vercel_project_name,
+                lines_added, lines_removed
          FROM project_metadata
          {}
          ORDER BY folder_key",
@@ -463,8 +471,8 @@ pub fn get_projects(
                 repo_owner: row.get(7)?,
                 commit_count: row.get(8)?,
                 last_commit_date: row.get(9)?,
-                lines_added: None,
-                lines_removed: None,
+                lines_added: row.get(16)?,
+                lines_removed: row.get(17)?,
                 days_since_last_commit: row.get(10)?,
                 deployment: row.get(11)?,
                 production_url: row.get(12)?,
@@ -1275,6 +1283,14 @@ pub fn get_diff_stats(
             .filter_map(|h| h.join().ok())
             .collect()
     });
+
+    // Persist computed stats to DB so subsequent loads are instant
+    for stat in &results {
+        let _ = conn.execute(
+            "UPDATE project_metadata SET lines_added = ?1, lines_removed = ?2 WHERE folder_key = ?3",
+            rusqlite::params![stat.lines_added, stat.lines_removed, stat.folder_key],
+        );
+    }
 
     Ok(results)
 }

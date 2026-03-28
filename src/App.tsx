@@ -192,12 +192,8 @@ export default function App() {
     };
   }, [allProjects]);
 
-  // Fetch diff stats after projects load (non-blocking)
-  useEffect(() => {
-    // if (allProjects.length > 0 && allProjects.every((p) => p.lines_added == null)) {
-    //   loadDiffStats();
-    // }
-  }, [allProjects.length]);
+  // Diff stats are now persisted in SQLite and loaded with projects.
+  // They are refreshed automatically after each Sync.
 
   const handleSync = async () => {
     setSyncing(true);
