@@ -18,7 +18,8 @@ jobs:
 
       - name: Bump patch version and push tag
         run: |
-          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          LATEST=$(git tag --sort=-v:refname | head -1)
+          LATEST=${LATEST:-v0.0.0}
           VERSION=${LATEST#v}
           MAJOR=$(echo $VERSION | cut -d. -f1)
           MINOR=$(echo $VERSION | cut -d. -f2)
