@@ -140,6 +140,11 @@ pub fn run() {
             get_diff_stats,
             check_for_update,
             install_update,
+            get_task_counts,
+            get_tasks,
+            create_task,
+            update_task,
+            delete_task,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

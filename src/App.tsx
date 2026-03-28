@@ -2,13 +2,14 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import type { Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter } from "./types";
+import type { Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter, TaskCount } from "./types";
 import AppSidebar from "./components/Sidebar";
 import ProjectTable from "./components/ProjectTable";
 import ProjectDetail from "./components/ProjectDetail";
 import NewProjectDialog from "./components/NewProjectDialog";
 import WorkspaceSetup from "./components/WorkspaceSetup";
 import Settings from "./components/Settings";
+import TaskTable from "./components/TaskTable";
 import { perfStart, perfEnd } from "./lib/perf";
 
 interface WorkspaceConfig {
@@ -27,7 +28,7 @@ interface DiffStat {
   lines_removed: number | null;
 }
 
-type View = "projects" | "settings";
+type View = "projects" | "settings" | "tasks";
 
 export default function App() {
   const [workspaceReady, setWorkspaceReady] = useState<boolean | null>(null);
@@ -48,6 +49,10 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
   const [syncIsError, setSyncIsError] = useState(false);
+
+  // Task view state
+  const [taskProject, setTaskProject] = useState<Project | null>(null);
+  const [taskCounts, setTaskCounts] = useState<Map<string, TaskCount>>(new Map());
 
   // Check workspace config on mount
   useEffect(() => {
@@ -84,6 +89,16 @@ export default function App() {
       setInstalling(false);
     }
   };
+
+  // Load task counts
+  const loadTaskCounts = useCallback(async () => {
+    try {
+      const counts = await invoke<TaskCount[]>("get_task_counts");
+      setTaskCounts(new Map(counts.map((c) => [c.folder_key, c])));
+    } catch {
+      // silently fail
+    }
+  }, []);
 
   // Lazy-load diff stats after projects render
   const loadDiffStats = useCallback(async () => {
@@ -130,7 +145,10 @@ export default function App() {
 
   // Only fetch from DB when workspace becomes ready (not on filter changes)
   useEffect(() => {
-    if (workspaceReady) load();
+    if (workspaceReady) {
+      load();
+      loadTaskCounts();
+    }
   }, [workspaceReady]);
 
   // Client-side filtering — instant, no IPC round-trip
@@ -195,6 +213,7 @@ export default function App() {
       setSyncing(false);
       await load();
       loadDiffStats();
+      loadTaskCounts();
     }
   };
 
@@ -215,6 +234,19 @@ export default function App() {
       setSheetOpen(false);
     }
     await load();
+    loadTaskCounts();
+  };
+
+  const handleOpenTasks = (project: Project) => {
+    setTaskProject(project);
+    setView("tasks");
+    setSheetOpen(false);
+  };
+
+  const handleBackFromTasks = () => {
+    setView("projects");
+    setTaskProject(null);
+    loadTaskCounts(); // Refresh counts when coming back
   };
 
   const handleWorkspaceChanged = async () => {
@@ -256,6 +288,7 @@ export default function App() {
           installing={installing}
           onOpenSettings={() => setView("settings")}
           activeView={view}
+          taskProject={taskProject}
         />
 
         <SidebarInset className="min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">
@@ -265,6 +298,13 @@ export default function App() {
               onWorkspaceChanged={handleWorkspaceChanged}
               onBack={() => setView("projects")}
             />
+          ) : view === "tasks" && taskProject ? (
+            <div className="m-2 min-h-0 flex-1">
+              <TaskTable
+                project={taskProject}
+                onBack={handleBackFromTasks}
+              />
+            </div>
           ) : (
             <div className="m-2 min-h-0 flex-1">
               <ProjectTable
@@ -281,6 +321,8 @@ export default function App() {
                 syncIsError={syncIsError}
                 onStatusChange={handleStatusChange}
                 onDeleteSelected={handleDeleteSelected}
+                taskCounts={taskCounts}
+                onOpenTasks={handleOpenTasks}
               />
             </div>
           )}

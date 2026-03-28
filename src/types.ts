@@ -24,6 +24,29 @@ export type CategoryFilter = "all" | "project" | "reference" | "tooling";
 export type DeployFilter = string;
 export type HostFilter = string;
 
+export interface Task {
+  id: number;
+  folder_key: string;
+  kind: string;
+  title: string;
+  description: string | null;
+  status: string;
+  priority: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+}
+
+export interface TaskCount {
+  folder_key: string;
+  open_count: number;
+  total_count: number;
+}
+
+export type TaskStatusFilter = "all" | "open" | "in-progress" | "done" | "closed";
+export type TaskKindFilter = "all" | "task" | "issue" | "request" | "next-step";
+export type TaskPriorityFilter = "all" | "urgent" | "high" | "medium" | "low";
+
 export interface DeleteGuardrails {
   folder_key: string;
   folder_name: string;

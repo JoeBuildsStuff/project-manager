@@ -23,6 +23,7 @@ import {
   FolderKanban,
   Pencil,
   Trash2,
+  ListTodo,
 } from "lucide-react";
 import {
   Table,
@@ -32,7 +33,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { DataTableColumnHeader } from "@/components/ui/data-table-column-header";
@@ -46,10 +46,17 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Project } from "../types";
+import type { Project, TaskCount } from "../types";
+import { Badge } from "@/components/ui/badge";
 import { CategoryBadge, DeployBadge, StatusBadge } from "./StatusBadge";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import Toolbar from "./Toolbar";
+
+// Table meta type for passing task data into column renderers
+interface TableMeta {
+  taskCounts: Map<string, TaskCount>;
+  onOpenTasks: (p: Project) => void;
+}
 
 interface Props {
   projects: Project[];
@@ -65,6 +72,8 @@ interface Props {
   syncIsError: boolean;
   onStatusChange: (folder_key: string, status: string) => void;
   onDeleteSelected: (folderKeys: string[]) => Promise<void>;
+  taskCounts: Map<string, TaskCount>;
+  onOpenTasks: (p: Project) => void;
 }
 
 function relativeDate(iso: string | null): string {
@@ -279,6 +288,63 @@ const columns: ColumnDef<Project>[] = [
       ) : null;
     },
   },
+  {
+    id: "tasks",
+    enableSorting: true,
+    enableColumnFilter: false,
+    accessorFn: (project) => {
+      // Sorting value — will be 0 if no tasks
+      return project.folder_key;
+    },
+    header: ({ column }) => (
+      <DataTableColumnHeader
+        column={column}
+        title="Tasks"
+        icon={<ListTodo className={iconProps} strokeWidth={1.5} />}
+      />
+    ),
+    cell: ({ row: { original: p }, table: t }) => {
+      const meta = t.options.meta as TableMeta | undefined;
+      const counts = meta?.taskCounts?.get(p.folder_key);
+      const openCount = counts?.open_count ?? 0;
+      const totalCount = counts?.total_count ?? 0;
+
+      if (totalCount === 0) {
+        return (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              meta?.onOpenTasks(p);
+            }}
+            className="text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+          >
+            +
+          </button>
+        );
+      }
+
+      return (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            meta?.onOpenTasks(p);
+          }}
+          className="inline-flex items-center gap-1 transition-colors hover:opacity-80"
+        >
+          <Badge
+            variant={openCount > 0 ? "blue" : "gray"}
+            className="text-[11px] font-medium cursor-pointer"
+          >
+            {openCount} / {totalCount}
+          </Badge>
+        </button>
+      );
+    },
+    sortingFn: (_rowA, _rowB, _columnId) => {
+      // This won't have access to meta easily for sorting, so sort by folder_key as fallback
+      return 0;
+    },
+  },
 ];
 
 export default function ProjectTable({
@@ -294,6 +360,8 @@ export default function ProjectTable({
   syncMsg,
   syncIsError,
   onDeleteSelected,
+  taskCounts,
+  onOpenTasks,
 }: Props) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -319,6 +387,7 @@ export default function ProjectTable({
     getFacetedRowModel: facetedRowModel,
     getFacetedUniqueValues: facetedUniqueValues,
     enableRowSelection: true,
+    meta: { taskCounts, onOpenTasks } as TableMeta,
   });
 
   const selectedKeys = Object.keys(rowSelection).filter((k) => rowSelection[k]);
@@ -450,7 +519,7 @@ export default function ProjectTable({
           No projects match the current filter.
         </div>
       ) : (
-        <ScrollArea className="mt-1 min-h-0 flex-1 rounded-md border border-border [&_[data-slot=table-container]]:overflow-visible">
+        <div className="mt-1 min-h-0 flex-1 overflow-auto rounded-md border border-border">
           <Table>
             <TableHeader className="sticky top-0 z-10 bg-background">
               {table.getHeaderGroups().map((hg) => (
@@ -469,6 +538,7 @@ export default function ProjectTable({
                         header.column.id === "status"           && "w-[110px]",
                         header.column.id === "deploy_platform"  && "w-[100px]",
                         header.column.id === "host"             && "w-[90px]",
+                        header.column.id === "tasks"            && "w-[80px]",
                       )}
                     >
                       {header.isPlaceholder
@@ -509,7 +579,7 @@ export default function ProjectTable({
               })}
             </TableBody>
           </Table>
-        </ScrollArea>
+        </div>
       )}
 
       <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>

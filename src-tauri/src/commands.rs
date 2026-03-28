@@ -104,7 +104,25 @@ fn db_path(state: &WorkspaceState) -> Result<PathBuf, String> {
 
 fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     let path = db_path(state)?;
-    Connection::open(&path).map_err(|e| e.to_string())
+    let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    // Ensure tasks table exists (migration for existing databases)
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tasks (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder_key        TEXT NOT NULL REFERENCES project_metadata(folder_key)
+                                ON DELETE CASCADE ON UPDATE CASCADE,
+            kind              TEXT NOT NULL DEFAULT 'task',
+            title             TEXT NOT NULL,
+            description       TEXT,
+            status            TEXT NOT NULL DEFAULT 'open',
+            priority          TEXT DEFAULT 'medium',
+            created_at        TEXT DEFAULT (datetime('now')),
+            updated_at        TEXT DEFAULT (datetime('now')),
+            completed_at      TEXT
+        );",
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn)
 }
 
 fn workspace_path(state: &WorkspaceState, folder_key: &str) -> Result<PathBuf, String> {
@@ -193,6 +211,20 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
             vercel_project_name TEXT,
             updated_at        TEXT DEFAULT (datetime('now')),
             created_at        TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS tasks (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder_key        TEXT NOT NULL REFERENCES project_metadata(folder_key)
+                                ON DELETE CASCADE ON UPDATE CASCADE,
+            kind              TEXT NOT NULL DEFAULT 'task',
+            title             TEXT NOT NULL,
+            description       TEXT,
+            status            TEXT NOT NULL DEFAULT 'open',
+            priority          TEXT DEFAULT 'medium',
+            created_at        TEXT DEFAULT (datetime('now')),
+            updated_at        TEXT DEFAULT (datetime('now')),
+            completed_at      TEXT
         );",
     )
     .map_err(|e| e.to_string())?;
@@ -1245,4 +1277,255 @@ pub fn get_diff_stats(
     });
 
     Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// Task CRUD commands
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Task {
+    pub id: i64,
+    pub folder_key: String,
+    pub kind: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub status: String,
+    pub priority: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskCount {
+    pub folder_key: String,
+    pub open_count: i64,
+    pub total_count: i64,
+}
+
+#[tauri::command]
+pub fn get_task_counts(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<TaskCount>, String> {
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT folder_key,
+                    SUM(CASE WHEN status IN ('open', 'in-progress') THEN 1 ELSE 0 END) as open_count,
+                    COUNT(*) as total_count
+             FROM tasks
+             GROUP BY folder_key",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(TaskCount {
+                folder_key: row.get(0)?,
+                open_count: row.get(1)?,
+                total_count: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut counts = Vec::new();
+    for row in rows {
+        counts.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(counts)
+}
+
+#[tauri::command]
+pub fn get_tasks(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<Task>, String> {
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, folder_key, kind, title, description, status, priority,
+                    created_at, updated_at, completed_at
+             FROM tasks
+             WHERE folder_key = ?1
+             ORDER BY
+                CASE status
+                    WHEN 'in-progress' THEN 0
+                    WHEN 'open' THEN 1
+                    WHEN 'done' THEN 2
+                    WHEN 'closed' THEN 3
+                    ELSE 4
+                END,
+                CASE priority
+                    WHEN 'urgent' THEN 0
+                    WHEN 'high' THEN 1
+                    WHEN 'medium' THEN 2
+                    WHEN 'low' THEN 3
+                    ELSE 4
+                END,
+                created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([&folder_key], |row| {
+            Ok(Task {
+                id: row.get(0)?,
+                folder_key: row.get(1)?,
+                kind: row.get(2)?,
+                title: row.get(3)?,
+                description: row.get(4)?,
+                status: row.get(5)?,
+                priority: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                completed_at: row.get(9)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut tasks = Vec::new();
+    for row in rows {
+        tasks.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(tasks)
+}
+
+#[tauri::command]
+pub fn create_task(
+    folder_key: String,
+    title: String,
+    kind: Option<String>,
+    description: Option<String>,
+    priority: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Task, String> {
+    let conn = open_db(&state)?;
+    let kind = kind.unwrap_or_else(|| "task".into());
+    let priority = priority.unwrap_or_else(|| "medium".into());
+
+    conn.execute(
+        "INSERT INTO tasks (folder_key, kind, title, description, priority)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![folder_key, kind, title, description, priority],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let id = conn.last_insert_rowid();
+    let task = conn
+        .query_row(
+            "SELECT id, folder_key, kind, title, description, status, priority,
+                    created_at, updated_at, completed_at
+             FROM tasks WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(Task {
+                    id: row.get(0)?,
+                    folder_key: row.get(1)?,
+                    kind: row.get(2)?,
+                    title: row.get(3)?,
+                    description: row.get(4)?,
+                    status: row.get(5)?,
+                    priority: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                    completed_at: row.get(9)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(task)
+}
+
+#[tauri::command]
+pub fn update_task(
+    id: i64,
+    title: Option<String>,
+    description: Option<String>,
+    status: Option<String>,
+    kind: Option<String>,
+    priority: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Task, String> {
+    let conn = open_db(&state)?;
+
+    // Build dynamic UPDATE
+    let mut sets: Vec<String> = vec!["updated_at = datetime('now')".into()];
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![];
+
+    if let Some(ref t) = title {
+        params.push(Box::new(t.clone()));
+        sets.push(format!("title = ?{}", params.len()));
+    }
+    if let Some(ref d) = description {
+        params.push(Box::new(d.clone()));
+        sets.push(format!("description = ?{}", params.len()));
+    }
+    if let Some(ref s) = status {
+        params.push(Box::new(s.clone()));
+        sets.push(format!("status = ?{}", params.len()));
+        if s == "done" || s == "closed" {
+            sets.push("completed_at = datetime('now')".into());
+        } else {
+            sets.push("completed_at = NULL".into());
+        }
+    }
+    if let Some(ref k) = kind {
+        params.push(Box::new(k.clone()));
+        sets.push(format!("kind = ?{}", params.len()));
+    }
+    if let Some(ref p) = priority {
+        params.push(Box::new(p.clone()));
+        sets.push(format!("priority = ?{}", params.len()));
+    }
+
+    params.push(Box::new(id));
+    let id_param_idx = params.len();
+
+    let sql = format!(
+        "UPDATE tasks SET {} WHERE id = ?{}",
+        sets.join(", "),
+        id_param_idx
+    );
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    conn.execute(&sql, param_refs.as_slice())
+        .map_err(|e| e.to_string())?;
+
+    let task = conn
+        .query_row(
+            "SELECT id, folder_key, kind, title, description, status, priority,
+                    created_at, updated_at, completed_at
+             FROM tasks WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(Task {
+                    id: row.get(0)?,
+                    folder_key: row.get(1)?,
+                    kind: row.get(2)?,
+                    title: row.get(3)?,
+                    description: row.get(4)?,
+                    status: row.get(5)?,
+                    priority: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                    completed_at: row.get(9)?,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(task)
+}
+
+#[tauri::command]
+pub fn delete_task(
+    id: i64,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let conn = open_db(&state)?;
+    conn.execute("DELETE FROM tasks WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
