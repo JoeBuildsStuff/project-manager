@@ -23,6 +23,18 @@ pnpm tauri build
 # Output: src-tauri/target/release/bundle/
 ```
 
+### macOS: opening the distributed app
+
+This app is not distributed with an Apple Developer–signed, notarized build. After copying **Project Manager.app** to `/Applications`, Gatekeeper may block it or show security warnings because of quarantine attributes on the bundle.
+
+Clear extended attributes on the app once:
+
+```bash
+xattr -cr "/Applications/Project Manager.app"
+```
+
+Adjust the path if you installed the app somewhere else.
+
 ## Features
 
 ### Sidebar filters
