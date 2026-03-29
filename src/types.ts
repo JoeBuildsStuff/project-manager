@@ -17,12 +17,14 @@ export interface Project {
   deploy_platform: string | null;
   vercel_team_slug: string | null;
   vercel_project_name: string | null;
+  stage: string | null;
 }
 
 export type StatusFilter = "all" | "active" | "inbox" | "archived";
 export type CategoryFilter = "all" | "project" | "reference" | "tooling";
 export type DeployFilter = string;
 export type HostFilter = string;
+export type StageFilter = string;
 
 export interface Task {
   id: number;

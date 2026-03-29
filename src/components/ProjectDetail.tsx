@@ -10,6 +10,7 @@ import {
   Trash2,
   AlertTriangle,
   Loader2,
+  ChevronDown,
 } from "lucide-react";
 import {
   Sheet,
@@ -23,12 +24,10 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Dialog,
   DialogContent,
@@ -38,7 +37,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { CategoryBadge, StatusBadge } from "./StatusBadge";
+import { CategoryBadge, StatusBadge, StageBadge, DeployBadge } from "./StatusBadge";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import type { Project } from "../types";
 
@@ -46,7 +45,7 @@ interface Props {
   project: Project | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onStatusChange: (folder_key: string, status: string) => void;
+  onFieldChange: (folder_key: string, field: string, value: string | null) => Promise<void>;
   onRename: (folder_key: string, nextName: string) => Promise<void>;
   onDelete: (folder_key: string) => Promise<void>;
 }
@@ -57,13 +56,20 @@ interface GitStatus {
   is_dirty: boolean;
 }
 
-const STATUSES = ["active", "inbox", "archived"];
+const STATUS_OPTIONS = ["active", "inbox", "archived"];
+const CATEGORY_OPTIONS = ["project", "reference", "tooling"];
+const STAGE_OPTIONS = [
+  "idea", "mvp", "pmf", "growth", "scale", "platform",
+  "expand", "plateau", "erode", "dead", "reborn",
+];
+const DEPLOY_OPTIONS = ["vercel", "hetzner", "homelab", "local"];
+const HOST_OPTIONS = ["github", "gitlab", "bitbucket"];
 
 export default function ProjectDetail({
   project: p,
   open,
   onOpenChange,
-  onStatusChange,
+  onFieldChange,
   onRename,
   onDelete,
 }: Props) {
@@ -113,6 +119,9 @@ export default function ProjectDetail({
       setRenaming(false);
     }
   };
+
+  const handleField = (field: string, value: string | null) =>
+    onFieldChange(p.folder_key, field, value);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -197,48 +206,51 @@ export default function ProjectDetail({
 
             <Separator />
 
-            {/* Status */}
-            <div>
-              <SectionLabel>Status</SectionLabel>
-              <Select
-                value={p.status ?? "inbox"}
-                onValueChange={(val) => val && onStatusChange(p.folder_key, val)}
-              >
-                <SelectTrigger className="h-8 w-full text-xs">
-                  <SelectValue>
-                    <StatusBadge status={p.status} />
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {STATUSES.map((s) => (
-                    <SelectItem key={s} value={s} className="text-xs">
-                      {s}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <Separator />
-
-            {/* Details */}
+            {/* Details — editable fields */}
             <div>
               <SectionLabel>Details</SectionLabel>
               <dl className="space-y-1.5">
-                <Field
-                  label="Category"
-                  value={<CategoryBadge category={p.category} />}
-                />
-                <Field
+                <EditableField
                   label="Status"
-                  value={<StatusBadge status={p.status} />}
+                  value={p.status}
+                  options={STATUS_OPTIONS}
+                  onSelect={(v) => handleField("status", v)}
+                  renderBadge={(v) => <StatusBadge status={v} />}
                 />
-                <Field label="Host"        value={p.host} />
-                <Field label="Owner"       value={p.repo_owner} />
-                <Field label="Deploy"      value={p.deploy_platform} />
+                <EditableField
+                  label="Category"
+                  value={p.category}
+                  options={CATEGORY_OPTIONS}
+                  onSelect={(v) => handleField("category", v)}
+                  renderBadge={(v) => <CategoryBadge category={v} />}
+                />
+                <EditableField
+                  label="Stage"
+                  value={p.stage}
+                  options={STAGE_OPTIONS}
+                  onSelect={(v) => handleField("stage", v)}
+                  renderBadge={(v) => <StageBadge stage={v} />}
+                  clearable
+                />
+                <EditableField
+                  label="Host"
+                  value={p.host}
+                  options={HOST_OPTIONS}
+                  onSelect={(v) => handleField("host", v)}
+                  clearable
+                />
+                <EditableField
+                  label="Deploy"
+                  value={p.deploy_platform}
+                  options={DEPLOY_OPTIONS}
+                  onSelect={(v) => handleField("deploy_platform", v)}
+                  renderBadge={(v) => <DeployBadge platform={v} />}
+                  clearable
+                />
+                <Field label="Owner" value={p.repo_owner} />
                 {p.production_url && <Field label="URL" value={p.production_url} link />}
                 {p.vercel_project_name && <Field label="Vercel" value={p.vercel_project_name} />}
-                <Field label="Commits"     value={p.commit_count?.toString()} />
+                <Field label="Commits" value={p.commit_count?.toString()} />
                 <Field label="Last commit" value={p.last_commit_date?.split("T")[0]} />
                 {p.days_since_last_commit != null && (
                   <Field label="Days ago" value={p.days_since_last_commit.toString()} />
@@ -323,6 +335,74 @@ export default function ProjectDetail({
         onConfirm={onDelete}
       />
     </Sheet>
+  );
+}
+
+function EditableField({
+  label,
+  value,
+  options,
+  onSelect,
+  renderBadge,
+  clearable,
+}: {
+  label: string;
+  value: string | null;
+  options: string[];
+  onSelect: (value: string | null) => void;
+  renderBadge?: (value: string) => React.ReactNode;
+  clearable?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const handleSelect = (v: string | null) => {
+    onSelect(v);
+    setOpen(false);
+  };
+
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <dt className="w-20 shrink-0 text-muted-foreground/60">{label}</dt>
+      <dd className="min-w-0">
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger className="flex items-center gap-1 rounded-md px-1 py-0.5 transition-colors hover:bg-muted">
+              {value && renderBadge ? (
+                renderBadge(value)
+              ) : value ? (
+                <Badge variant="gray" className="text-[11px] font-medium">
+                  {value}
+                </Badge>
+              ) : (
+                <span className="text-muted-foreground/40 italic">none</span>
+              )}
+              <ChevronDown className="h-3 w-3 text-muted-foreground/40" />
+          </PopoverTrigger>
+          <PopoverContent className="w-40 p-1" align="start">
+            <div className="flex flex-col">
+              {clearable && value && (
+                <button
+                  className="rounded px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted"
+                  onClick={() => handleSelect(null)}
+                >
+                  Clear
+                </button>
+              )}
+              {options.map((opt) => (
+                <button
+                  key={opt}
+                  className={`flex items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted ${
+                    opt === value ? "bg-muted font-medium" : ""
+                  }`}
+                  onClick={() => handleSelect(opt)}
+                >
+                  {renderBadge ? renderBadge(opt) : opt}
+                </button>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </dd>
+    </div>
   );
 }
 

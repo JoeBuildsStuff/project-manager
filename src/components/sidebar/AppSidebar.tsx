@@ -12,7 +12,7 @@ import {
 import { SidebarLogo } from "@/components/app-sidebar-logo";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import type { StatusFilter, CategoryFilter, DeployFilter, HostFilter, Project } from "../../types";
+import type { StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, Project } from "../../types";
 import { ProjectSidebarContent } from "./ProjectSidebarContent";
 import { TaskSidebarContent } from "./TaskSidebarContent";
 
@@ -26,11 +26,13 @@ export interface AppSidebarProps {
   categoryFilter: CategoryFilter;
   deployFilter: DeployFilter;
   hostFilter: HostFilter;
+  stageFilter: StageFilter;
   onStatusFilter: (s: StatusFilter) => void;
   onCategoryFilter: (b: CategoryFilter) => void;
   onDeployFilter: (d: DeployFilter) => void;
   onHostFilter: (h: HostFilter) => void;
-  filterOptions: { deploy_platforms: string[]; hosts: string[] };
+  onStageFilter: (s: StageFilter) => void;
+  filterOptions: { deploy_platforms: string[]; hosts: string[]; stages: string[] };
   updateInfo?: UpdateInfo | null;
   onInstallUpdate?: () => void;
   installing?: boolean;
@@ -44,10 +46,12 @@ export default function AppSidebar({
   categoryFilter,
   deployFilter,
   hostFilter,
+  stageFilter,
   onStatusFilter,
   onCategoryFilter,
   onDeployFilter,
   onHostFilter,
+  onStageFilter,
   filterOptions,
   updateInfo,
   onInstallUpdate,
@@ -76,10 +80,12 @@ export default function AppSidebar({
             categoryFilter={categoryFilter}
             deployFilter={deployFilter}
             hostFilter={hostFilter}
+            stageFilter={stageFilter}
             onStatusFilter={onStatusFilter}
             onCategoryFilter={onCategoryFilter}
             onDeployFilter={onDeployFilter}
             onHostFilter={onHostFilter}
+            onStageFilter={onStageFilter}
             filterOptions={filterOptions}
           />
         )}

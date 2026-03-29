@@ -127,6 +127,8 @@ pub fn run() {
             get_project,
             get_filter_options,
             update_project_status,
+            update_project_stage,
+            update_project_field,
             delete_projects,
             delete_project_folder,
             rename_project_folder,

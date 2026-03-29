@@ -24,6 +24,7 @@ import {
   Pencil,
   Trash2,
   ListTodo,
+  Milestone,
 } from "lucide-react";
 import {
   Table,
@@ -48,7 +49,7 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Project, TaskCount } from "../types";
 import { Badge } from "@/components/ui/badge";
-import { CategoryBadge, DeployBadge, StatusBadge } from "./StatusBadge";
+import { CategoryBadge, DeployBadge, StageBadge, StatusBadge } from "./StatusBadge";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import Toolbar from "./Toolbar";
 
@@ -144,20 +145,6 @@ const columns: ColumnDef<Project>[] = [
     ),
   },
   {
-    accessorKey: "category",
-    enableSorting: true,
-    enableColumnFilter: true,
-    filterFn: arrIncludesFilter,
-    header: ({ column }) => (
-      <DataTableColumnHeader
-        column={column}
-        title="Category"
-        icon={<FolderKanban className={iconProps} strokeWidth={1.5} />}
-      />
-    ),
-    cell: ({ getValue }) => <CategoryBadge category={getValue() as string | null} />,
-  },
-  {
     accessorKey: "description",
     enableSorting: true,
     enableColumnFilter: false,
@@ -178,6 +165,20 @@ const columns: ColumnDef<Project>[] = [
     },
   },
   {
+    accessorKey: "category",
+    enableSorting: true,
+    enableColumnFilter: true,
+    filterFn: arrIncludesFilter,
+    header: ({ column }) => (
+      <DataTableColumnHeader
+        column={column}
+        title="Category"
+        icon={<FolderKanban className={iconProps} strokeWidth={1.5} />}
+      />
+    ),
+    cell: ({ getValue }) => <CategoryBadge category={getValue() as string | null} />,
+  },
+  {
     accessorKey: "status",
     enableSorting: true,
     enableColumnFilter: true,
@@ -190,6 +191,20 @@ const columns: ColumnDef<Project>[] = [
       />
     ),
     cell: ({ getValue }) => <StatusBadge status={getValue() as string | null} />,
+  },
+  {
+    accessorKey: "stage",
+    enableSorting: true,
+    enableColumnFilter: true,
+    filterFn: arrIncludesFilter,
+    header: ({ column }) => (
+      <DataTableColumnHeader
+        column={column}
+        title="Stage"
+        icon={<Milestone className={iconProps} strokeWidth={1.5} />}
+      />
+    ),
+    cell: ({ getValue }) => <StageBadge stage={getValue() as string | null} />,
   },
   {
     accessorKey: "deploy_platform",
@@ -492,8 +507,8 @@ export default function ProjectTable({
           <div className="flex items-center gap-3 border-b border-border px-3 py-2.5">
             <Skeleton className="h-4 w-4 rounded" />
             <Skeleton className="h-3.5 w-[120px]" />
-            <Skeleton className="h-3.5 w-[90px]" />
             <Skeleton className="h-3.5 w-[220px]" />
+            <Skeleton className="h-3.5 w-[90px]" />
             <Skeleton className="h-3.5 w-[80px]" />
             <Skeleton className="h-3.5 w-[80px]" />
             <Skeleton className="h-3.5 w-[70px]" />
@@ -506,8 +521,8 @@ export default function ProjectTable({
             >
               <Skeleton className="h-4 w-4 rounded" />
               <Skeleton className="h-3.5 w-[120px]" />
-              <Skeleton className="h-3.5 w-[90px]" />
               <Skeleton className="h-3.5 w-[220px]" />
+              <Skeleton className="h-3.5 w-[90px]" />
               <Skeleton className="h-3.5 w-[80px]" />
               <Skeleton className="h-3.5 w-[80px]" />
               <Skeleton className="h-3.5 w-[70px]" />
@@ -536,6 +551,7 @@ export default function ProjectTable({
                         header.column.id === "diff"             && "w-[110px]",
                         header.column.id === "last_commit_date" && "w-[100px] pr-4",
                         header.column.id === "status"           && "w-[110px]",
+                        header.column.id === "stage"            && "w-[110px]",
                         header.column.id === "deploy_platform"  && "w-[100px]",
                         header.column.id === "host"             && "w-[90px]",
                         header.column.id === "tasks"            && "w-[80px]",

@@ -1,4 +1,7 @@
-import { Zap, Inbox, Archive, FolderKanban, BookOpen, Wrench, Globe, Server, Home } from "lucide-react";
+import {
+  Zap, Inbox, Archive, FolderKanban, BookOpen, Wrench, Globe, Server, Home,
+  Lightbulb, Hammer, Target, TrendingUp, Layers, LayoutGrid, Expand, PauseCircle, TrendingDown, Skull, RotateCcw,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 type BadgeVariant =
   | "default"
@@ -66,6 +69,37 @@ export function CategoryBadge({ category }: { category: string | null }) {
     <Badge variant={cfg.variant} className="gap-1 text-[11px] font-medium">
       <Icon className="h-2.5 w-2.5" />
       {category}
+    </Badge>
+  );
+}
+
+const STAGE_CONFIG: Record<string, { variant: BadgeVariant; icon: React.ElementType }> = {
+  idea:     { variant: "gray",    icon: Lightbulb   },
+  mvp:      { variant: "blue",    icon: Hammer      },
+  pmf:      { variant: "indigo",  icon: Target      },
+  growth:   { variant: "green",   icon: TrendingUp  },
+  scale:    { variant: "green",   icon: Layers      },
+  platform: { variant: "purple",  icon: LayoutGrid  },
+  expand:   { variant: "purple",  icon: Expand      },
+  plateau:  { variant: "yellow",  icon: PauseCircle },
+  erode:    { variant: "orange",  icon: TrendingDown },
+  dead:     { variant: "red",     icon: Skull       },
+  reborn:   { variant: "amber",   icon: RotateCcw   },
+};
+
+export function StageBadge({ stage }: { stage: string | null }) {
+  if (!stage) return null;
+  const cfg = STAGE_CONFIG[stage];
+  if (!cfg) return (
+    <Badge variant="gray" className="text-[11px] font-medium">
+      {stage}
+    </Badge>
+  );
+  const Icon = cfg.icon;
+  return (
+    <Badge variant={cfg.variant} className="gap-1 text-[11px] font-medium">
+      <Icon className="h-2.5 w-2.5" />
+      {stage}
     </Badge>
   );
 }

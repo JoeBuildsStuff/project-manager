@@ -105,6 +105,9 @@ fn db_path(state: &WorkspaceState) -> Result<PathBuf, String> {
 fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     let path = db_path(state)?;
     let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    // Idempotent migration – add stage column if missing
+    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN stage TEXT", []);
+
     // Ensure tasks table exists (migration for existing databases)
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS tasks (
@@ -234,6 +237,7 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
     // Idempotent migrations – silently ignored if column already exists
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN lines_added INTEGER", []);
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN lines_removed INTEGER", []);
+    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN stage TEXT", []);
 
     Ok(())
 }
@@ -262,6 +266,7 @@ pub struct Project {
     pub deploy_platform: Option<String>,
     pub vercel_team_slug: Option<String>,
     pub vercel_project_name: Option<String>,
+    pub stage: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -450,7 +455,7 @@ pub fn get_projects(
                 commit_count, last_commit_date, days_since_last_commit,
                 deployment, production_url, deploy_platform,
                 vercel_team_slug, vercel_project_name,
-                lines_added, lines_removed
+                lines_added, lines_removed, stage
          FROM project_metadata
          {}
          ORDER BY folder_key",
@@ -479,6 +484,7 @@ pub fn get_projects(
                 deploy_platform: row.get(13)?,
                 vercel_team_slug: row.get(14)?,
                 vercel_project_name: row.get(15)?,
+                stage: row.get(18)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -532,7 +538,7 @@ pub fn get_project(
             "SELECT folder_key, folder_name, description, status, category, repo, host, repo_owner,
                     commit_count, last_commit_date, days_since_last_commit,
                     deployment, production_url, deploy_platform,
-                    vercel_team_slug, vercel_project_name
+                    vercel_team_slug, vercel_project_name, stage
              FROM project_metadata WHERE folder_key = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -566,6 +572,7 @@ pub fn get_project(
                 deploy_platform: row.get(13)?,
                 vercel_team_slug: row.get(14)?,
                 vercel_project_name: row.get(15)?,
+                stage: row.get(16)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -589,6 +596,42 @@ pub fn update_project_status(
         [&status, &folder_key],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_project_stage(
+    folder_key: String,
+    stage: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let conn = open_db(&state)?;
+    conn.execute(
+        "UPDATE project_metadata SET stage = ?1 WHERE folder_key = ?2",
+        rusqlite::params![stage, folder_key],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_project_field(
+    folder_key: String,
+    field: String,
+    value: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let column = match field.as_str() {
+        "status" | "category" | "stage" | "host" | "deploy_platform" => &field,
+        _ => return Err(format!("Field '{}' is not editable", field)),
+    };
+    let conn = open_db(&state)?;
+    let sql = format!(
+        "UPDATE project_metadata SET {} = ?1 WHERE folder_key = ?2",
+        column
+    );
+    conn.execute(&sql, rusqlite::params![value, folder_key])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

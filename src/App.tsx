@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import type { Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter, TaskCount } from "./types";
+import type { Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, TaskCount } from "./types";
 import AppSidebar from "./components/Sidebar";
 import ProjectTable from "./components/ProjectTable";
 import ProjectDetail from "./components/ProjectDetail";
@@ -44,6 +44,7 @@ export default function App() {
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [deployFilter, setDeployFilter] = useState<DeployFilter>("all");
   const [hostFilter, setHostFilter] = useState<HostFilter>("all");
+  const [stageFilter, setStageFilter] = useState<StageFilter>("all");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -166,6 +167,9 @@ export default function App() {
     if (hostFilter !== "all") {
       filtered = filtered.filter((p) => p.host === hostFilter);
     }
+    if (stageFilter !== "all") {
+      filtered = filtered.filter((p) => p.stage === stageFilter);
+    }
     if (search) {
       const q = search.toLowerCase();
       filtered = filtered.filter(
@@ -176,19 +180,22 @@ export default function App() {
       );
     }
     return filtered;
-  }, [allProjects, statusFilter, categoryFilter, deployFilter, hostFilter, search]);
+  }, [allProjects, statusFilter, categoryFilter, deployFilter, hostFilter, stageFilter, search]);
 
   // Derive filter options from in-memory data (no extra DB query needed)
   const filterOptions = useMemo(() => {
     const deploySet = new Set<string>();
     const hostSet = new Set<string>();
+    const stageSet = new Set<string>();
     for (const p of allProjects) {
       if (p.deploy_platform) deploySet.add(p.deploy_platform);
       if (p.host) hostSet.add(p.host);
+      if (p.stage) stageSet.add(p.stage);
     }
     return {
       deploy_platforms: [...deploySet].sort(),
       hosts: [...hostSet].sort(),
+      stages: [...stageSet].sort(),
     };
   }, [allProjects]);
 
@@ -221,6 +228,15 @@ export default function App() {
   const handleStatusChange = async (folder_key: string, status: string) => {
     await invoke("update_project_status", { folderKey: folder_key, status });
     await load();
+  };
+
+  const handleFieldChange = async (folder_key: string, field: string, value: string | null) => {
+    await invoke("update_project_field", { folderKey: folder_key, field, value });
+    await load();
+    if (selected?.folder_key === folder_key) {
+      const updated = await invoke<Project | null>("get_project", { folderKey: folder_key });
+      setSelected(updated);
+    }
   };
 
   const handleDeleteSelected = async (folderKeys: string[]) => {
@@ -274,10 +290,12 @@ export default function App() {
           categoryFilter={categoryFilter}
           deployFilter={deployFilter}
           hostFilter={hostFilter}
+          stageFilter={stageFilter}
           onStatusFilter={(s) => { setView("projects"); setStatusFilter(s); }}
           onCategoryFilter={(b) => { setView("projects"); setCategoryFilter(b); }}
           onDeployFilter={(d) => { setView("projects"); setDeployFilter(d); }}
           onHostFilter={(h) => { setView("projects"); setHostFilter(h); }}
+          onStageFilter={(s) => { setView("projects"); setStageFilter(s); }}
           filterOptions={filterOptions}
           updateInfo={updateInfo}
           onInstallUpdate={handleInstallUpdate}
@@ -328,7 +346,7 @@ export default function App() {
           project={selected}
           open={sheetOpen}
           onOpenChange={setSheetOpen}
-          onStatusChange={handleStatusChange}
+          onFieldChange={handleFieldChange}
           onRename={async (folderKey, nextName) => {
             const nextKey = await invoke<string>("rename_project_folder", {
               folderKey,

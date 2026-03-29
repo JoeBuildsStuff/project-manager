@@ -12,6 +12,17 @@ import {
   Home,
   Minus,
   GitBranch,
+  Lightbulb,
+  Hammer,
+  Target,
+  TrendingUp,
+  Layers,
+  LayoutGrid,
+  Expand,
+  PauseCircle,
+  TrendingDown,
+  Skull,
+  RotateCcw,
 } from "lucide-react";
 import {
   SidebarGroup,
@@ -22,18 +33,20 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
-import type { StatusFilter, CategoryFilter, DeployFilter, HostFilter } from "../../types";
+import type { StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter } from "../../types";
 
 export interface ProjectSidebarContentProps {
   statusFilter: StatusFilter;
   categoryFilter: CategoryFilter;
   deployFilter: DeployFilter;
   hostFilter: HostFilter;
+  stageFilter: StageFilter;
   onStatusFilter: (s: StatusFilter) => void;
   onCategoryFilter: (b: CategoryFilter) => void;
   onDeployFilter: (d: DeployFilter) => void;
   onHostFilter: (h: HostFilter) => void;
-  filterOptions: { deploy_platforms: string[]; hosts: string[] };
+  onStageFilter: (s: StageFilter) => void;
+  filterOptions: { deploy_platforms: string[]; hosts: string[]; stages: string[] };
 }
 
 const STATUS_OPTIONS: {
@@ -59,6 +72,34 @@ const CATEGORY_OPTIONS: {
   { value: "tooling", label: "Tooling", icon: Wrench },
 ];
 
+const STAGE_ICONS: Record<string, React.ElementType> = {
+  idea: Lightbulb,
+  mvp: Hammer,
+  pmf: Target,
+  growth: TrendingUp,
+  scale: Layers,
+  platform: LayoutGrid,
+  expand: Expand,
+  plateau: PauseCircle,
+  erode: TrendingDown,
+  dead: Skull,
+  reborn: RotateCcw,
+};
+
+const STAGE_COLORS: Record<string, string> = {
+  idea: "text-zinc-400",
+  mvp: "text-blue-400",
+  pmf: "text-indigo-400",
+  growth: "text-green-400",
+  scale: "text-emerald-400",
+  platform: "text-purple-400",
+  expand: "text-violet-400",
+  plateau: "text-yellow-400",
+  erode: "text-orange-400",
+  dead: "text-red-400",
+  reborn: "text-amber-400",
+};
+
 const DEPLOY_ICONS: Record<string, React.ElementType> = {
   vercel: Globe,
   hetzner: Server,
@@ -80,10 +121,12 @@ export function ProjectSidebarContent({
   categoryFilter,
   deployFilter,
   hostFilter,
+  stageFilter,
   onStatusFilter,
   onCategoryFilter,
   onDeployFilter,
   onHostFilter,
+  onStageFilter,
   filterOptions,
 }: ProjectSidebarContentProps) {
   return (
@@ -143,6 +186,44 @@ export function ProjectSidebarContent({
           </SidebarMenu>
         </SidebarGroupContent>
       </SidebarGroup>
+
+      {filterOptions.stages.length > 0 && (
+        <SidebarGroup>
+          <SidebarGroupLabel>Stage</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={stageFilter === "all"}
+                  onClick={() => onStageFilter("all")}
+                  className="w-full"
+                  tooltip="All stages"
+                >
+                  <CircleDot className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+                  <span>All stages</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              {filterOptions.stages.map((s) => {
+                const Icon = STAGE_ICONS[s] ?? CircleDot;
+                const color = STAGE_COLORS[s] ?? "text-muted-foreground";
+                return (
+                  <SidebarMenuItem key={s}>
+                    <SidebarMenuButton
+                      isActive={stageFilter === s}
+                      onClick={() => onStageFilter(s)}
+                      className="w-full"
+                      tooltip={s}
+                    >
+                      <Icon className={cn("h-3.5 w-3.5 shrink-0", color)} />
+                      <span className="capitalize">{s}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      )}
 
       <SidebarGroup>
         <SidebarGroupLabel>Deploy</SidebarGroupLabel>
