@@ -1,15 +1,42 @@
-name: Release
+name: Tag & Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - master
 
 permissions:
   contents: write
 
 jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.bump.outputs.new_tag }}
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump patch version and push tag
+        id: bump
+        run: |
+          LATEST=$(git tag --sort=-v:refname | head -1)
+          LATEST=${LATEST:-v0.0.0}
+          VERSION=${LATEST#v}
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+          NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          echo "Latest: $LATEST → New: $NEW_TAG"
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${NEW_TAG#v}" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: tag
     runs-on: macos-latest
 
     steps:
@@ -35,7 +62,7 @@ jobs:
 
       - name: Sync version from git tag
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.tag.outputs.version }}"
           echo "Setting version to $VERSION"
           sed -i '' "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
           sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
@@ -55,7 +82,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          TAG="${{ needs.tag.outputs.new_tag }}"
+          VERSION="${{ needs.tag.outputs.version }}"
           BUNDLE_DIR="src-tauri/target/release/bundle"
 
           echo "=== Bundle contents ==="
@@ -79,16 +107,16 @@ jobs:
           echo "Signature: $SIGNATURE"
 
           # Create the GitHub release
-          gh release create "$GITHUB_REF_NAME" \
-            --title "Project Manager $GITHUB_REF_NAME" \
+          gh release create "$TAG" \
+            --title "Project Manager $TAG" \
             --notes "See the commits for changes in this release."
 
           # Upload DMG and tar.gz
-          gh release upload "$GITHUB_REF_NAME" "$DMG"
-          gh release upload "$GITHUB_REF_NAME" "$TAR"
+          gh release upload "$TAG" "$DMG"
+          gh release upload "$TAG" "$TAR"
 
-          # Get the tar.gz download URL (GitHub replaces spaces with dots in asset names)
-          TAR_URL=$(gh release view "$GITHUB_REF_NAME" --json assets \
+          # Get the tar.gz download URL
+          TAR_URL=$(gh release view "$TAG" --json assets \
             --jq '.assets[] | select(.name | endswith(".tar.gz")) | .url')
           echo "Tar URL: $TAR_URL"
 
@@ -115,4 +143,4 @@ jobs:
           cat latest.json
 
           # Upload latest.json
-          gh release upload "$GITHUB_REF_NAME" latest.json
+          gh release upload "$TAG" latest.json
