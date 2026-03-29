@@ -68,6 +68,9 @@ import { cn } from "@/lib/utils";
 import type { Task, Project } from "@/types";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ModeToggle } from "@/components/mode-toggle";
+import ActiveFilters from "./ActiveFilters";
+import SavedViewPicker from "./SavedViewPicker";
+import type { SavedView } from "@/types";
 
 interface Props {
   project: Project;
@@ -286,6 +289,57 @@ export default function TaskTable({ project, onBack }: Props) {
   const [deleteTask, setDeleteTask] = useState<Task | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Saved views (scoped to tasks context)
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [activeViewId, setActiveViewId] = useState<string | null>(null);
+
+  const loadViews = useCallback(async () => {
+    try {
+      const views = await invoke<SavedView[]>("get_table_views", { context: "tasks" });
+      setSavedViews(views);
+    } catch {
+      // silently ignore if workspace not configured yet
+    }
+  }, []);
+
+  useEffect(() => {
+    loadViews();
+  }, [loadViews]);
+
+  const handleLoadView = useCallback((view: SavedView) => {
+    setSorting(JSON.parse(view.sorting));
+    setColumnFilters(JSON.parse(view.filters));
+    setColumnVisibility(JSON.parse(view.visibility));
+    setActiveViewId(view.id);
+  }, []);
+
+  const activeView = useMemo(
+    () => savedViews.find((v) => v.id === activeViewId) ?? null,
+    [savedViews, activeViewId],
+  );
+
+  const isDirty = useMemo(() => {
+    if (!activeView) return false;
+    return (
+      JSON.stringify(sorting) !== activeView.sorting ||
+      JSON.stringify(columnFilters) !== activeView.filters ||
+      JSON.stringify(columnVisibility) !== activeView.visibility
+    );
+  }, [activeView, sorting, columnFilters, columnVisibility]);
+
+  const handleSaveView = useCallback(async () => {
+    if (!activeView) return;
+    await invoke("save_table_view", {
+      id: activeView.id,
+      name: activeView.name,
+      context: "tasks",
+      sorting: JSON.stringify(sorting),
+      filters: JSON.stringify(columnFilters),
+      visibility: JSON.stringify(columnVisibility),
+    });
+    loadViews();
+  }, [activeView, sorting, columnFilters, columnVisibility, loadViews]);
+
   const loadTasks = useCallback(async () => {
     setLoading(true);
     try {
@@ -430,10 +484,32 @@ export default function TaskTable({ project, onBack }: Props) {
           {loading && (
             <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
           )}
+          <SavedViewPicker
+            context="tasks"
+            views={savedViews}
+            activeViewId={activeViewId}
+            sorting={sorting}
+            columnFilters={columnFilters}
+            columnVisibility={columnVisibility}
+            onLoadView={handleLoadView}
+            onViewsChange={loadViews}
+          />
           <DataTableViewOptions table={table} />
           <ModeToggle align="end" />
         </div>
       </div>
+
+      <ActiveFilters
+        table={table}
+        context="tasks"
+        sorting={sorting}
+        columnFilters={columnFilters}
+        columnVisibility={columnVisibility}
+        activeView={activeView}
+        isDirty={isDirty}
+        onSaveView={handleSaveView}
+        onViewsChange={loadViews}
+      />
 
       {/* Table */}
       {loading && tasks.length === 0 ? (

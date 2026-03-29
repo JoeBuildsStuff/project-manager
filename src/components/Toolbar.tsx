@@ -100,6 +100,7 @@ export default function Toolbar({
           {syncing ? "Syncing…" : ""}
         </Button>
         <SavedViewPicker
+          context="projects"
           views={savedViews}
           activeViewId={activeViewId}
           sorting={sorting}

@@ -52,6 +52,7 @@ export type TaskPriorityFilter = "all" | "urgent" | "high" | "medium" | "low";
 export interface SavedView {
   id: string;
   name: string;
+  context: string;   // "projects" | "tasks"
   sorting: string;   // JSON-serialized SortingState
   filters: string;   // JSON-serialized ColumnFiltersState
   visibility: string; // JSON-serialized VisibilityState

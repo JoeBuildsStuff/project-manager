@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import type { SavedView } from "@/types";
 
 interface Props {
+  context: string;
   views: SavedView[];
   activeViewId: string | null;
   sorting: SortingState;
@@ -23,6 +24,7 @@ interface Props {
 }
 
 export default function SavedViewPicker({
+  context,
   views,
   activeViewId,
   sorting,
@@ -42,6 +44,7 @@ export default function SavedViewPicker({
     await invoke("save_table_view", {
       id,
       name,
+      context,
       sorting: JSON.stringify(sorting),
       filters: JSON.stringify(columnFilters),
       visibility: JSON.stringify(columnVisibility),
@@ -55,6 +58,7 @@ export default function SavedViewPicker({
     await invoke("save_table_view", {
       id: view.id,
       name: view.name,
+      context,
       sorting: JSON.stringify(sorting),
       filters: JSON.stringify(columnFilters),
       visibility: JSON.stringify(columnVisibility),

@@ -154,6 +154,12 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     )
     .map_err(|e| e.to_string())?;
 
+    // Idempotent migration: add context column if missing (existing rows → 'projects')
+    let _ = conn.execute(
+        "ALTER TABLE table_views ADD COLUMN context TEXT NOT NULL DEFAULT 'projects'",
+        [],
+    );
+
     Ok(conn)
 }
 
@@ -280,6 +286,12 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
         );",
     )
     .map_err(|e| e.to_string())?;
+
+    // Idempotent migration: add context column if missing (existing rows → 'projects')
+    let _ = conn.execute(
+        "ALTER TABLE table_views ADD COLUMN context TEXT NOT NULL DEFAULT 'projects'",
+        [],
+    );
 
     Ok(())
 }
@@ -1758,14 +1770,15 @@ pub struct TableView {
 
 #[tauri::command]
 pub fn get_table_views(
+    context: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Vec<TableView>, String> {
     let conn = open_db(&state)?;
     let mut stmt = conn
-        .prepare("SELECT id, name, sorting, filters, visibility FROM table_views ORDER BY name")
+        .prepare("SELECT id, name, sorting, filters, visibility FROM table_views WHERE context = ?1 ORDER BY name")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params![context], |row| {
             Ok(TableView {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -1786,6 +1799,7 @@ pub fn get_table_views(
 pub fn save_table_view(
     id: String,
     name: String,
+    context: String,
     sorting: String,
     filters: String,
     visibility: String,
@@ -1793,15 +1807,16 @@ pub fn save_table_view(
 ) -> Result<(), String> {
     let conn = open_db(&state)?;
     conn.execute(
-        "INSERT INTO table_views (id, name, sorting, filters, visibility, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+        "INSERT INTO table_views (id, name, context, sorting, filters, visibility, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
          ON CONFLICT(id) DO UPDATE SET
            name       = excluded.name,
+           context    = excluded.context,
            sorting    = excluded.sorting,
            filters    = excluded.filters,
            visibility = excluded.visibility,
            updated_at = datetime('now')",
-        rusqlite::params![id, name, sorting, filters, visibility],
+        rusqlite::params![id, name, context, sorting, filters, visibility],
     )
     .map_err(|e| e.to_string())?;
     Ok(())

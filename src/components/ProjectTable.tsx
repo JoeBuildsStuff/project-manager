@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   useReactTable,
@@ -53,6 +53,7 @@ import { Badge } from "@/components/ui/badge";
 import { CategoryBadge, DeployBadge, StageBadge, StatusBadge } from "./StatusBadge";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import Toolbar from "./Toolbar";
+import ActiveFilters from "./ActiveFilters";
 
 // Table meta type for passing task data into column renderers
 interface TableMeta {
@@ -394,7 +395,7 @@ export default function ProjectTable({
 
   const loadViews = useCallback(async () => {
     try {
-      const views = await invoke<SavedView[]>("get_table_views");
+      const views = await invoke<SavedView[]>("get_table_views", { context: "projects" });
       setSavedViews(views);
     } catch {
       // silently ignore if workspace not configured yet
@@ -412,30 +413,41 @@ export default function ProjectTable({
     setActiveViewId(view.id);
   }, []);
 
-  // Clear active view when user manually changes state
-  const handleSortingChange = useCallback((updater: SortingState | ((prev: SortingState) => SortingState)) => {
-    setSorting(updater);
-    setActiveViewId(null);
-  }, []);
+  const activeView = useMemo(
+    () => savedViews.find((v) => v.id === activeViewId) ?? null,
+    [savedViews, activeViewId],
+  );
 
-  const handleFiltersChange = useCallback((updater: ColumnFiltersState | ((prev: ColumnFiltersState) => ColumnFiltersState)) => {
-    setColumnFilters(updater);
-    setActiveViewId(null);
-  }, []);
+  const isDirty = useMemo(() => {
+    if (!activeView) return false;
+    return (
+      JSON.stringify(sorting) !== activeView.sorting ||
+      JSON.stringify(columnFilters) !== activeView.filters ||
+      JSON.stringify(columnVisibility) !== activeView.visibility
+    );
+  }, [activeView, sorting, columnFilters, columnVisibility]);
 
-  const handleVisibilityChange = useCallback((updater: VisibilityState | ((prev: VisibilityState) => VisibilityState)) => {
-    setColumnVisibility(updater);
-    setActiveViewId(null);
-  }, []);
+  const handleSaveView = useCallback(async () => {
+    if (!activeView) return;
+    await invoke("save_table_view", {
+      id: activeView.id,
+      name: activeView.name,
+      context: "projects",
+      sorting: JSON.stringify(sorting),
+      filters: JSON.stringify(columnFilters),
+      visibility: JSON.stringify(columnVisibility),
+    });
+    loadViews();
+  }, [activeView, sorting, columnFilters, columnVisibility, loadViews]);
 
   const table = useReactTable({
     data: projects,
     columns,
     getRowId: (row) => row.folder_key,
     state: { sorting, columnFilters, columnVisibility, rowSelection },
-    onSortingChange: handleSortingChange,
-    onColumnFiltersChange: handleFiltersChange,
-    onColumnVisibilityChange: handleVisibilityChange,
+    onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
+    onColumnVisibilityChange: setColumnVisibility,
     onRowSelectionChange: setRowSelection,
     getCoreRowModel: coreRowModel,
     getFilteredRowModel: filteredRowModel,
@@ -502,6 +514,18 @@ export default function ProjectTable({
         columnFilters={columnFilters}
         columnVisibility={columnVisibility}
         onLoadView={handleLoadView}
+        onViewsChange={loadViews}
+      />
+
+      <ActiveFilters
+        table={table}
+        context="projects"
+        sorting={sorting}
+        columnFilters={columnFilters}
+        columnVisibility={columnVisibility}
+        activeView={activeView}
+        isDirty={isDirty}
+        onSaveView={handleSaveView}
         onViewsChange={loadViews}
       />
 
