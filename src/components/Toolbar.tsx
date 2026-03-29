@@ -1,5 +1,10 @@
-import { Search, RefreshCw, Loader2, Plus } from "lucide-react";
-import { type Table } from "@tanstack/react-table";
+import { Search, RefreshCw, Loader2, Plus, X } from "lucide-react";
+import {
+  type Table,
+  type SortingState,
+  type ColumnFiltersState,
+  type VisibilityState,
+} from "@tanstack/react-table";
 import {
   InputGroup,
   InputGroupAddon,
@@ -9,7 +14,8 @@ import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ModeToggle } from "@/components/mode-toggle";
 import { DataTableViewOptions } from "@/components/ui/data-table-view-options";
-import type { Project } from "@/types";
+import SavedViewPicker from "@/components/SavedViewPicker";
+import type { Project, SavedView } from "@/types";
 
 interface Props {
   table: Table<Project>;
@@ -21,6 +27,14 @@ interface Props {
   syncMsg: string;
   syncIsError: boolean;
   loading: boolean;
+  // Saved views
+  savedViews: SavedView[];
+  activeViewId: string | null;
+  sorting: SortingState;
+  columnFilters: ColumnFiltersState;
+  columnVisibility: VisibilityState;
+  onLoadView: (view: SavedView) => void;
+  onViewsChange: () => void;
 }
 
 export default function Toolbar({
@@ -33,6 +47,13 @@ export default function Toolbar({
   syncMsg,
   syncIsError,
   loading,
+  savedViews,
+  activeViewId,
+  sorting,
+  columnFilters,
+  columnVisibility,
+  onLoadView,
+  onViewsChange,
 }: Props) {
   return (
     <div className="flex items-center gap-1">
@@ -53,6 +74,11 @@ export default function Toolbar({
           value={search}
           onChange={(e) => onSearch(e.target.value)}
         />
+        <InputGroupAddon align="inline-end"> 
+          <Button variant="ghost" size="icon-xs" onClick={() => onSearch("")} disabled={search === ""}>
+            <X />
+          </Button>
+        </InputGroupAddon>
       </InputGroup>
 
       <div className="flex shrink-0 items-center gap-1">
@@ -65,14 +91,23 @@ export default function Toolbar({
           </span>
         )}
         <Button
-          variant="secondary"
+          variant="ghost"
           size="sm"
           onClick={onSync}
           disabled={syncing}
         >
           <RefreshCw className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
-          {syncing ? "Syncing…" : "Sync"}
+          {syncing ? "Syncing…" : ""}
         </Button>
+        <SavedViewPicker
+          views={savedViews}
+          activeViewId={activeViewId}
+          sorting={sorting}
+          columnFilters={columnFilters}
+          columnVisibility={columnVisibility}
+          onLoadView={onLoadView}
+          onViewsChange={onViewsChange}
+        />
         <DataTableViewOptions table={table} />
         <ModeToggle align="end" />
       </div>

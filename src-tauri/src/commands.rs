@@ -28,6 +28,20 @@ impl WorkspaceState {
 }
 
 // ---------------------------------------------------------------------------
+// Token cache – holds secrets in memory so keychain is only hit once per session
+// ---------------------------------------------------------------------------
+
+pub struct TokenCache {
+    pub cache: Mutex<std::collections::HashMap<String, String>>,
+}
+
+impl TokenCache {
+    pub fn new() -> Self {
+        Self { cache: Mutex::new(std::collections::HashMap::new()) }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Update state – holds a pending update between check and install
 // ---------------------------------------------------------------------------
 
@@ -125,6 +139,21 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
         );",
     )
     .map_err(|e| e.to_string())?;
+
+    // Ensure table_views table exists
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS table_views (
+            id         TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            sorting    TEXT NOT NULL DEFAULT '[]',
+            filters    TEXT NOT NULL DEFAULT '[]',
+            visibility TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );",
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(conn)
 }
 
@@ -238,6 +267,19 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN lines_added INTEGER", []);
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN lines_removed INTEGER", []);
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN stage TEXT", []);
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS table_views (
+            id         TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            sorting    TEXT NOT NULL DEFAULT '[]',
+            filters    TEXT NOT NULL DEFAULT '[]',
+            visibility TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );",
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -622,9 +664,10 @@ pub fn update_project_field(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
     let column = match field.as_str() {
-        "status" | "category" | "stage" | "host" | "deploy_platform" => &field,
+        "status" | "category" | "stage" | "host" | "deploy_platform" | "production_url" => &field,
         _ => return Err(format!("Field '{}' is not editable", field)),
     };
+    println!("[update_project_field] folder={} field={} value={:?}", folder_key, field, value);
     let conn = open_db(&state)?;
     let sql = format!(
         "UPDATE project_metadata SET {} = ?1 WHERE folder_key = ?2",
@@ -632,6 +675,7 @@ pub fn update_project_field(
     );
     conn.execute(&sql, rusqlite::params![value, folder_key])
         .map_err(|e| e.to_string())?;
+    println!("[update_project_field] ✓ saved to SQLite");
     Ok(())
 }
 
@@ -1008,15 +1052,15 @@ fn has_readme(path: &Path) -> bool {
 fn detect_host(remote_url: &str) -> String {
     let url = remote_url.to_lowercase();
     if url.contains("github.com") {
-        "GitHub".into()
+        "github".into()
     } else if url.contains("gitlab.com") {
-        "GitLab".into()
+        "gitlab".into()
     } else if url.contains("bitbucket.org") {
-        "Bitbucket".into()
+        "bitbucket".into()
     } else if url.contains("gitea") || url.contains("forgejo") {
-        "Gitea".into()
+        "gitea".into()
     } else {
-        "Other".into()
+        "other".into()
     }
 }
 
@@ -1585,6 +1629,191 @@ pub fn delete_task(
 ) -> Result<(), String> {
     let conn = open_db(&state)?;
     conn.execute("DELETE FROM tasks WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Secure token storage (OS Keychain)
+// ---------------------------------------------------------------------------
+
+const KEYRING_SERVICE: &str = "com.joebuilds.project-manager";
+
+#[tauri::command]
+pub fn save_secret(key: String, value: String, cache: tauri::State<'_, TokenCache>) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
+    entry.set_password(&value).map_err(|e| e.to_string())?;
+    // Update in-memory cache immediately
+    cache.cache.lock().unwrap().insert(key, value);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_secret(key: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(pw) => Ok(Some(pw)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn delete_secret(key: String, cache: tauri::State<'_, TokenCache>) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()), // already gone
+        Err(e) => Err(e.to_string()),
+    }?;
+    // Evict from cache
+    cache.cache.lock().unwrap().remove(&key);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn has_secret(key: String) -> Result<bool, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GitHub API – update repo homepage URL
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn update_github_repo_url(
+    owner_repo: String,
+    homepage: Option<String>,
+    cache: tauri::State<'_, TokenCache>,
+) -> Result<(), String> {
+    println!("[update_github_repo_url] repo={} homepage={:?}", owner_repo, homepage);
+
+    // Try in-memory cache first to avoid repeated keychain prompts
+    let token = {
+        let mut map = cache.cache.lock().unwrap();
+        if let Some(t) = map.get("github_token").cloned() {
+            println!("[update_github_repo_url] ✓ token from memory cache");
+            t
+        } else {
+            // Not cached yet — read from keychain (may prompt once)
+            let entry = keyring::Entry::new(KEYRING_SERVICE, "github_token")
+                .map_err(|e| e.to_string())?;
+            match entry.get_password() {
+                Ok(t) => {
+                    println!("[update_github_repo_url] ✓ token loaded from keychain (now cached)");
+                    map.insert("github_token".into(), t.clone());
+                    t
+                }
+                Err(keyring::Error::NoEntry) => {
+                    println!("[update_github_repo_url] ✗ no token in keychain");
+                    return Err("No GitHub token configured. Add one in Settings.".into())
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+    };
+
+    let url = format!("https://api.github.com/repos/{}", owner_repo);
+    println!("[update_github_repo_url] PATCH {}", url);
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .patch(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "project-manager")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .json(&serde_json::json!({ "homepage": homepage }))
+        .send()
+        .map_err(|e| format!("GitHub API request failed: {e}"))?;
+
+    let status = resp.status();
+    if status.is_success() {
+        println!("[update_github_repo_url] ✓ GitHub responded {}", status);
+        Ok(())
+    } else {
+        let body = resp.text().unwrap_or_default();
+        println!("[update_github_repo_url] ✗ GitHub error {} — {}", status, body);
+        Err(format!("GitHub API error {}: {}", status, body))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Table views
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TableView {
+    pub id: String,
+    pub name: String,
+    pub sorting: String,
+    pub filters: String,
+    pub visibility: String,
+}
+
+#[tauri::command]
+pub fn get_table_views(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<TableView>, String> {
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, sorting, filters, visibility FROM table_views ORDER BY name")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(TableView {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                sorting: row.get(2)?,
+                filters: row.get(3)?,
+                visibility: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut views = Vec::new();
+    for r in rows {
+        views.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(views)
+}
+
+#[tauri::command]
+pub fn save_table_view(
+    id: String,
+    name: String,
+    sorting: String,
+    filters: String,
+    visibility: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let conn = open_db(&state)?;
+    conn.execute(
+        "INSERT INTO table_views (id, name, sorting, filters, visibility, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET
+           name       = excluded.name,
+           sorting    = excluded.sorting,
+           filters    = excluded.filters,
+           visibility = excluded.visibility,
+           updated_at = datetime('now')",
+        rusqlite::params![id, name, sorting, filters, visibility],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_table_view(
+    id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let conn = open_db(&state)?;
+    conn.execute("DELETE FROM table_views WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
 }

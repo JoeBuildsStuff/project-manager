@@ -49,6 +49,14 @@ export type TaskStatusFilter = "all" | "open" | "in-progress" | "done" | "closed
 export type TaskKindFilter = "all" | "task" | "issue" | "request" | "next-step";
 export type TaskPriorityFilter = "all" | "urgent" | "high" | "medium" | "low";
 
+export interface SavedView {
+  id: string;
+  name: string;
+  sorting: string;   // JSON-serialized SortingState
+  filters: string;   // JSON-serialized ColumnFiltersState
+  visibility: string; // JSON-serialized VisibilityState
+}
+
 export interface DeleteGuardrails {
   folder_key: string;
   folder_name: string;

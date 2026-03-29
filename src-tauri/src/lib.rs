@@ -15,6 +15,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(WorkspaceState::new())
         .manage(UpdateState::new())
+        .manage(TokenCache::new())
         .setup(|app| {
             // Build app menu with "Check for Updates..." item
             let check_updates =
@@ -147,6 +148,14 @@ pub fn run() {
             create_task,
             update_task,
             delete_task,
+            save_secret,
+            get_secret,
+            delete_secret,
+            has_secret,
+            update_github_repo_url,
+            get_table_views,
+            save_table_view,
+            delete_table_view,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

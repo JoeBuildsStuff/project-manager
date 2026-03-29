@@ -22,10 +22,9 @@ export function DataTableViewOptions<TData>({ table }: { table: Table<TData> }) 
   return (
     <Popover>
       <PopoverTrigger
-        className={cn(buttonVariants({ variant: "secondary", size: "sm" }))}
+        className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
       >
         <Columns className="h-3.5 w-3.5" />
-        Columns
       </PopoverTrigger>
       <PopoverContent align="end" side="bottom" sideOffset={6} className="w-40 p-1">
         {hideableCols.map((col) => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   FolderOpen,
@@ -63,7 +63,7 @@ const STAGE_OPTIONS = [
   "expand", "plateau", "erode", "dead", "reborn",
 ];
 const DEPLOY_OPTIONS = ["vercel", "hetzner", "homelab", "local"];
-const HOST_OPTIONS = ["github", "gitlab", "bitbucket"];
+const HOST_OPTIONS = ["github", "gitlab", "bitbucket", "gitea"];
 
 export default function ProjectDetail({
   project: p,
@@ -122,6 +122,28 @@ export default function ProjectDetail({
 
   const handleField = (field: string, value: string | null) =>
     onFieldChange(p.folder_key, field, value);
+
+  const handleProductionUrl = async (value: string | null) => {
+    console.log("[prod_url] saving to SQLite:", { folder_key: p.folder_key, value });
+    await handleField("production_url", value);
+    console.log("[prod_url] ✓ SQLite saved");
+
+    if (p.host === "github" && p.repo_owner) {
+      console.log("[prod_url] host=github, repo_owner=%s — calling GitHub API", p.repo_owner);
+      try {
+        await invoke("update_github_repo_url", {
+          ownerRepo: p.repo_owner,
+          homepage: value,
+        });
+        console.log("[prod_url] ✓ GitHub About URL updated");
+      } catch (e) {
+        console.error("[prod_url] ✗ GitHub API error:", e);
+        setActionError(String(e));
+      }
+    } else {
+      console.log("[prod_url] skipping GitHub API (host=%s, repo_owner=%s)", p.host, p.repo_owner);
+    }
+  };
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -198,10 +220,7 @@ export default function ProjectDetail({
             </div>
 
             {actionError && (
-              <>
-                <Separator />
-                <p className="text-xs text-destructive">{actionError}</p>
-              </>
+              <p className="text-xs text-destructive">{actionError}</p>
             )}
 
             <Separator />
@@ -247,8 +266,13 @@ export default function ProjectDetail({
                   renderBadge={(v) => <DeployBadge platform={v} />}
                   clearable
                 />
+                <EditableTextField
+                  label="Prod URL"
+                  value={p.production_url}
+                  placeholder="https://example.com"
+                  onSave={handleProductionUrl}
+                />
                 <Field label="Owner" value={p.repo_owner} />
-                {p.production_url && <Field label="URL" value={p.production_url} link />}
                 {p.vercel_project_name && <Field label="Vercel" value={p.vercel_project_name} />}
                 <Field label="Commits" value={p.commit_count?.toString()} />
                 <Field label="Last commit" value={p.last_commit_date?.split("T")[0]} />
@@ -278,10 +302,7 @@ export default function ProjectDetail({
                 <GitCommit className="h-3 w-3" />
                 Git status
                 {gitStatus?.is_dirty && (
-                  <Badge
-                    variant="yellow"
-                    className="ml-1 text-[10px]"
-                  >
+                  <Badge variant="yellow" className="ml-1 text-[10px]">
                     dirty
                   </Badge>
                 )}
@@ -338,6 +359,10 @@ export default function ProjectDetail({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Editable picklist field
+// ---------------------------------------------------------------------------
+
 function EditableField({
   label,
   value,
@@ -366,16 +391,16 @@ function EditableField({
       <dd className="min-w-0">
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger className="flex items-center gap-1 rounded-md px-1 py-0.5 transition-colors hover:bg-muted">
-              {value && renderBadge ? (
-                renderBadge(value)
-              ) : value ? (
-                <Badge variant="gray" className="text-[11px] font-medium">
-                  {value}
-                </Badge>
-              ) : (
-                <span className="text-muted-foreground/40 italic">none</span>
-              )}
-              <ChevronDown className="h-3 w-3 text-muted-foreground/40" />
+            {value && renderBadge ? (
+              renderBadge(value)
+            ) : value ? (
+              <Badge variant="gray" className="text-[11px] font-medium">
+                {value}
+              </Badge>
+            ) : (
+              <span className="text-muted-foreground/40 italic">none</span>
+            )}
+            <ChevronDown className="h-3 w-3 text-muted-foreground/40" />
           </PopoverTrigger>
           <PopoverContent className="w-40 p-1" align="start">
             <div className="flex flex-col">
@@ -405,6 +430,86 @@ function EditableField({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Inline editable text field (click to edit, Enter/blur to save)
+// ---------------------------------------------------------------------------
+
+function EditableTextField({
+  label,
+  value,
+  placeholder,
+  onSave,
+}: {
+  label: string;
+  value: string | null;
+  placeholder?: string;
+  onSave: (value: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const startEdit = () => {
+    setDraft(value ?? "");
+    setEditing(true);
+    setTimeout(() => inputRef.current?.select(), 0);
+  };
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    onSave(trimmed === "" ? null : trimmed);
+    setEditing(false);
+  };
+
+  const cancel = () => setEditing(false);
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-2 text-xs">
+        <dt className="w-20 shrink-0 text-muted-foreground/60">{label}</dt>
+        <dd className="flex min-w-0 flex-1 items-center gap-1">
+          <Input
+            ref={inputRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+              if (e.key === "Escape") cancel();
+            }}
+            onBlur={commit}
+            placeholder={placeholder}
+            className="h-6 flex-1 px-1.5 text-xs"
+            autoFocus
+          />
+        </dd>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <dt className="w-20 shrink-0 text-muted-foreground/60">{label}</dt>
+      <dd className="min-w-0">
+        <button
+          onClick={startEdit}
+          className="flex items-center gap-1 rounded-md px-1 py-0.5 transition-colors hover:bg-muted"
+        >
+          {value ? (
+            <span className="max-w-[160px] truncate text-blue-400">{value}</span>
+          ) : (
+            <span className="text-muted-foreground/40 italic">none</span>
+          )}
+          <Pencil className="h-2.5 w-2.5 text-muted-foreground/40" />
+        </button>
+      </dd>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rename dialog
+// ---------------------------------------------------------------------------
 
 function RenameFolderDialog({
   folderKey,
@@ -458,6 +563,10 @@ function RenameFolderDialog({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Utility components
+// ---------------------------------------------------------------------------
+
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
@@ -469,21 +578,15 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 function Field({
   label,
   value,
-  link,
 }: {
   label: string;
   value: React.ReactNode;
-  link?: boolean;
 }) {
   if (!value) return null;
   return (
     <div className="flex items-baseline gap-2 text-xs">
       <dt className="w-20 shrink-0 text-muted-foreground/60">{label}</dt>
-      {link ? (
-        <dd className="min-w-0 cursor-pointer break-all text-blue-400 hover:underline">{value}</dd>
-      ) : (
-        <dd className="min-w-0 break-all text-muted-foreground">{value}</dd>
-      )}
+      <dd className="min-w-0 break-all text-muted-foreground">{value}</dd>
     </div>
   );
 }
