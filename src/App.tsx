@@ -10,6 +10,7 @@ import NewProjectDialog from "./components/NewProjectDialog";
 import WorkspaceSetup from "./components/WorkspaceSetup";
 import Settings from "./components/Settings";
 import TaskTable from "./components/TaskTable";
+import Notes from "./components/Notes";
 import { perfStart, perfEnd } from "./lib/perf";
 
 interface WorkspaceConfig {
@@ -28,9 +29,10 @@ interface DiffStat {
   lines_removed: number | null;
 }
 
-type View = "projects" | "settings" | "tasks";
+type View = "projects" | "settings" | "tasks" | "notes";
 
 export default function App() {
+  const [pendingJumpTarget, setPendingJumpTarget] = useState<"project-table" | "task-table" | null>(null);
   const [workspaceReady, setWorkspaceReady] = useState<boolean | null>(null);
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [view, setView] = useState<View>("projects");
@@ -261,6 +263,42 @@ export default function App() {
     loadTaskCounts(); // Refresh counts when coming back
   };
 
+  const handleJumpToProjects = () => {
+    setView("projects");
+    setPendingJumpTarget("project-table");
+  };
+
+  const handleJumpToTasks = () => {
+    const projectForTasks = selected ?? taskProject;
+    if (!projectForTasks) return;
+
+    setTaskProject(projectForTasks);
+    setView("tasks");
+    setSheetOpen(false);
+    setPendingJumpTarget("task-table");
+  };
+
+  const handleJumpToNotes = () => {
+    setView("notes");
+  };
+
+  useEffect(() => {
+    if (!pendingJumpTarget) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      const element = document.getElementById(pendingJumpTarget);
+      if (!element) return;
+
+      element.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (element instanceof HTMLElement) {
+        element.focus({ preventScroll: true });
+      }
+      setPendingJumpTarget(null);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingJumpTarget, view, taskProject]);
+
   const handleWorkspaceChanged = async () => {
     const config = await invoke<WorkspaceConfig>("get_workspace_config");
     setWorkspaceReady(config.is_configured);
@@ -301,6 +339,10 @@ export default function App() {
           onInstallUpdate={handleInstallUpdate}
           installing={installing}
           onOpenSettings={() => setView("settings")}
+          onJumpToProjects={handleJumpToProjects}
+          onJumpToTasks={handleJumpToTasks}
+          onJumpToNotes={handleJumpToNotes}
+          canJumpToTasks={Boolean(selected ?? taskProject)}
           activeView={view}
           taskProject={taskProject}
         />
@@ -313,14 +355,16 @@ export default function App() {
               onBack={() => setView("projects")}
             />
           ) : view === "tasks" && taskProject ? (
-            <div className="m-2 min-h-0 flex-1">
+            <div id="task-table" tabIndex={-1} className="m-2 min-h-0 flex-1 outline-none">
               <TaskTable
                 project={taskProject}
                 onBack={handleBackFromTasks}
               />
             </div>
+          ) : view === "notes" ? (
+            <Notes />
           ) : (
-            <div className="m-2 min-h-0 flex-1">
+            <div id="project-table" tabIndex={-1} className="m-2 min-h-0 flex-1 outline-none">
               <ProjectTable
                 projects={projects}
                 selected={selected}

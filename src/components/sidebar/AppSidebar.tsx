@@ -1,8 +1,11 @@
-import { Settings } from "lucide-react";
+import { FileText, FolderKanban, ListTodo, Settings } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -10,6 +13,7 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar";
 import { SidebarLogo } from "@/components/app-sidebar-logo";
+import { ModeToggle } from "@/components/mode-toggle";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import type { StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, Project } from "../../types";
@@ -37,6 +41,10 @@ export interface AppSidebarProps {
   onInstallUpdate?: () => void;
   installing?: boolean;
   onOpenSettings?: () => void;
+  onJumpToProjects?: () => void;
+  onJumpToTasks?: () => void;
+  onJumpToNotes?: () => void;
+  canJumpToTasks?: boolean;
   activeView?: string;
   taskProject?: Project | null;
 }
@@ -57,6 +65,10 @@ export default function AppSidebar({
   onInstallUpdate,
   installing,
   onOpenSettings,
+  onJumpToProjects,
+  onJumpToTasks,
+  onJumpToNotes,
+  canJumpToTasks,
   activeView,
   taskProject,
 }: AppSidebarProps) {
@@ -72,6 +84,48 @@ export default function AppSidebar({
       </SidebarHeader>
 
       <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Jump To</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeView === "projects"}
+                  onClick={onJumpToProjects}
+                  className="w-full"
+                  tooltip="Project table"
+                >
+                  <FolderKanban className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span>Project Table</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeView === "notes"}
+                  onClick={onJumpToNotes}
+                  className="w-full"
+                  tooltip="Notes"
+                >
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span>Notes</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeView === "tasks"}
+                  onClick={onJumpToTasks}
+                  disabled={!canJumpToTasks}
+                  className="w-full"
+                  tooltip={canJumpToTasks ? "Task table" : "Select a project to open tasks"}
+                >
+                  <ListTodo className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span>Task Table</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
         {isTaskView ? (
           <TaskSidebarContent project={taskProject} />
         ) : (
@@ -113,18 +167,21 @@ export default function AppSidebar({
             </CardContent>
           </Card>
         )}
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              isActive={activeView === "settings"}
-              onClick={onOpenSettings}
-              tooltip="Settings"
-            >
-              <Settings className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span>Settings</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+        <div className="flex items-center justify-between gap-2 group-data-[collapsible=icon]:flex-col">
+          <SidebarMenu className="min-w-0 flex-1">
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                isActive={activeView === "settings"}
+                onClick={onOpenSettings}
+                tooltip="Settings"
+              >
+                <Settings className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span>Settings</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+          <ModeToggle align="end" />
+        </div>
       </SidebarFooter>
 
       <SidebarRail />

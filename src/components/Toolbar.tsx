@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/input-group";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { ModeToggle } from "@/components/mode-toggle";
 import { DataTableViewOptions } from "@/components/ui/data-table-view-options";
 import SavedViewPicker from "@/components/SavedViewPicker";
 import type { Project, SavedView } from "@/types";
@@ -110,7 +109,6 @@ export default function Toolbar({
           onViewsChange={onViewsChange}
         />
         <DataTableViewOptions table={table} />
-        <ModeToggle align="end" />
       </div>
     </div>
   );
