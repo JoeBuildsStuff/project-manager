@@ -1,4 +1,4 @@
-import { Check, File, Kanban, Settings, SquareCheckBig } from "lucide-react";
+import { Check, File, Kanban, Settings } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
