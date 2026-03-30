@@ -1,6 +1,7 @@
 "use client";
 
 import { Editor, useEditorState } from "@tiptap/react";
+import { useState } from "react";
 import {
   Strikethrough,
   Heading1,
@@ -25,17 +26,21 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuShortcut,
-  DropdownMenuTrigger,
-} from "@/components/tiptap/dropdown-menu-tiptap";
-import { Button } from "@/components/ui/button";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { buttonVariants } from "@/components/ui/button";
 import { LinkButton } from "@/components/tiptap/link-button";
 import TableButton from "@/components/tiptap/table-button";
+import {
+  editorMenuPopoverContentClassName,
+  editorMenuPopoverItemClassName,
+  editorMenuPopoverShortcutClassName,
+} from "@/components/tiptap/editor-menu-popover-classes";
 import { CopyButton } from "@/components/ui/copy-button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 
 interface FixedMenuProps {
   editor: Editor;
@@ -48,6 +53,9 @@ const FixedMenu = ({
   showComments,
   onShowCommentsChange,
 }: FixedMenuProps) => {
+  const [blockTypeOpen, setBlockTypeOpen] = useState(false);
+  const [textAlignOpen, setTextAlignOpen] = useState(false);
+
   const editorState = useEditorState({
     editor,
     selector: (state: { editor: Editor }) => ({
@@ -86,178 +94,222 @@ const FixedMenu = ({
     return htmlContent !== textContent ? htmlContent : textContent;
   };
 
+  const menuTriggerClassName = cn(
+    buttonVariants({
+      variant: "secondary",
+      size: "sm",
+    }),
+    "h-8 min-w-8 px-1.5 text-xs"
+  );
+
   return (
     <ScrollArea className="h-12 min-w-0 rounded-t-md border-b border-border bg-card">
         <div className="flex h-full flex-row items-center justify-between p-2">
           <div className="flex flex-row gap-1">
             {/* type of node */}
             <div className="flex flex-row gap-0.5 w-fit">
-              <Tooltip>
-                <TooltipTrigger>
-                  <DropdownMenu modal={false}>
-                    <DropdownMenuTrigger asChild>
-                      <Button size="sm" className="text-xs" variant="secondary">
-                        {editorState.isHeading1 && <Heading1 className="" />}
-                        {editorState.isHeading2 && <Heading2 className="" />}
-                        {editorState.isHeading3 && <Heading3 className="" />}
-                        {editorState.isOrderedList && (
-                          <ListOrdered className="" />
-                        )}
-                        {editorState.isBulletList && <List className="" />}
-                        {editorState.isCodeBlock && <Code className="" />}
-                        {!editorState.isHeading1 &&
-                          !editorState.isHeading2 &&
-                          !editorState.isHeading3 &&
-                          !editorState.isOrderedList &&
-                          !editorState.isBulletList &&
-                          !editorState.isCodeBlock && <Type className="" />}
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      align="start"
-                      side="bottom"
-                      sideOffset={4}
-                      className="text-xs w-48"
+              <Popover open={blockTypeOpen} onOpenChange={setBlockTypeOpen}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <PopoverTrigger
+                      className={menuTriggerClassName}
                     >
-                      <DropdownMenuItem
-                        onClick={() =>
-                          editor.chain().focus().setParagraph().run()
-                        }
-                      >
-                        <Type className="" />
-                        <span className="text-xs">Text</span>
-                        <DropdownMenuShortcut>⌘ ⌥ 0</DropdownMenuShortcut>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          editor
-                            .chain()
-                            .focus()
-                            .toggleHeading({ level: 1 })
-                            .run()
-                        }
-                      >
-                        <Heading1 className="" />
-                        <span className="text-xs">Heading 1</span>
-                        <DropdownMenuShortcut>⌘ ⌥ 1</DropdownMenuShortcut>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          editor
-                            .chain()
-                            .focus()
-                            .toggleHeading({ level: 2 })
-                            .run()
-                        }
-                      >
-                        <Heading2 className="" />
-                        <span className="text-xs">Heading 2</span>
-                        <DropdownMenuShortcut>⌘ ⌥ 2</DropdownMenuShortcut>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          editor
-                            .chain()
-                            .focus()
-                            .toggleHeading({ level: 3 })
-                            .run()
-                        }
-                      >
-                        <Heading3 className="" />
-                        <span className="text-xs">Heading 3</span>
-                        <DropdownMenuShortcut>⌘ ⌥ 3</DropdownMenuShortcut>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          editor.chain().focus().toggleOrderedList().run()
-                        }
-                      >
-                        <ListOrdered className="" />
-                        <span className="text-xs">Ordered list</span>
-                        <DropdownMenuShortcut>⌘ ⇧ 7</DropdownMenuShortcut>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          editor.chain().focus().toggleBulletList().run()
-                        }
-                      >
-                        <List className="" />
-                        <span className="text-xs">Bullet list</span>
-                        <DropdownMenuShortcut>⌘ ⇧ 8</DropdownMenuShortcut>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          editor.chain().focus().toggleCodeBlock().run()
-                        }
-                      >
-                        <Code className="" />
-                        <span className="text-xs">Code block</span>
-                        <DropdownMenuShortcut>⌘ ⌥ C</DropdownMenuShortcut>
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>Block type</p>
-                </TooltipContent>
-              </Tooltip>
+                      {editorState.isHeading1 && <Heading1 className="" />}
+                      {editorState.isHeading2 && <Heading2 className="" />}
+                      {editorState.isHeading3 && <Heading3 className="" />}
+                      {editorState.isOrderedList && <ListOrdered className="" />}
+                      {editorState.isBulletList && <List className="" />}
+                      {editorState.isCodeBlock && <Code className="" />}
+                      {!editorState.isHeading1 &&
+                        !editorState.isHeading2 &&
+                        !editorState.isHeading3 &&
+                        !editorState.isOrderedList &&
+                        !editorState.isBulletList &&
+                        !editorState.isCodeBlock && <Type className="" />}
+                    </PopoverTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Block type</p>
+                  </TooltipContent>
+                </Tooltip>
+                <PopoverContent
+                  align="start"
+                  side="bottom"
+                  sideOffset={4}
+                  className={editorMenuPopoverContentClassName("w-48")}
+                >
+                  <button
+                    type="button"
+                    className={editorMenuPopoverItemClassName}
+                    onClick={() => {
+                      editor.chain().focus().setParagraph().run();
+                      setBlockTypeOpen(false);
+                    }}
+                  >
+                    <Type className="" />
+                    <span>Text</span>
+                    <span className={editorMenuPopoverShortcutClassName}>
+                      ⌘ ⌥ 0
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={editorMenuPopoverItemClassName}
+                    onClick={() => {
+                      editor.chain().focus().toggleHeading({ level: 1 }).run();
+                      setBlockTypeOpen(false);
+                    }}
+                  >
+                    <Heading1 className="" />
+                    <span>Heading 1</span>
+                    <span className={editorMenuPopoverShortcutClassName}>
+                      ⌘ ⌥ 1
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={editorMenuPopoverItemClassName}
+                    onClick={() => {
+                      editor.chain().focus().toggleHeading({ level: 2 }).run();
+                      setBlockTypeOpen(false);
+                    }}
+                  >
+                    <Heading2 className="" />
+                    <span>Heading 2</span>
+                    <span className={editorMenuPopoverShortcutClassName}>
+                      ⌘ ⌥ 2
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={editorMenuPopoverItemClassName}
+                    onClick={() => {
+                      editor.chain().focus().toggleHeading({ level: 3 }).run();
+                      setBlockTypeOpen(false);
+                    }}
+                  >
+                    <Heading3 className="" />
+                    <span>Heading 3</span>
+                    <span className={editorMenuPopoverShortcutClassName}>
+                      ⌘ ⌥ 3
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={editorMenuPopoverItemClassName}
+                    onClick={() => {
+                      editor.chain().focus().toggleOrderedList().run();
+                      setBlockTypeOpen(false);
+                    }}
+                  >
+                    <ListOrdered className="" />
+                    <span>Ordered list</span>
+                    <span className={editorMenuPopoverShortcutClassName}>
+                      ⌘ ⇧ 7
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={editorMenuPopoverItemClassName}
+                    onClick={() => {
+                      editor.chain().focus().toggleBulletList().run();
+                      setBlockTypeOpen(false);
+                    }}
+                  >
+                    <List className="" />
+                    <span>Bullet list</span>
+                    <span className={editorMenuPopoverShortcutClassName}>
+                      ⌘ ⇧ 8
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={editorMenuPopoverItemClassName}
+                    onClick={() => {
+                      editor.chain().focus().toggleCodeBlock().run();
+                      setBlockTypeOpen(false);
+                    }}
+                  >
+                    <Code className="" />
+                    <span>Code block</span>
+                    <span className={editorMenuPopoverShortcutClassName}>
+                      ⌘ ⌥ C
+                    </span>
+                  </button>
+                </PopoverContent>
+              </Popover>
             </div>
 
             {/* alignment */}
             <div className="flex flex-row gap-0.5 w-fit">
-              <Tooltip>
-                <TooltipTrigger>
-                  <DropdownMenu modal={false}>
-                    <DropdownMenuTrigger asChild>
-                      <Button size="sm" className="text-xs" variant="secondary">
-                        {editorState.isAlignLeft && <AlignLeft className="" />}
-                        {editorState.isAlignCenter && (
-                          <AlignCenter className="" />
-                        )}
-                        {editorState.isAlignRight && (
-                          <AlignRight className="" />
-                        )}
-                        {!editorState.isAlignLeft &&
-                          !editorState.isAlignCenter &&
-                          !editorState.isAlignRight && (
-                            <AlignLeft className="" />
-                          )}
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      align="start"
-                      side="bottom"
-                      sideOffset={4}
-                      className="text-xs w-40"
+              <Popover open={textAlignOpen} onOpenChange={setTextAlignOpen}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <PopoverTrigger
+                      className={menuTriggerClassName}
                     >
-                      <DropdownMenuItem
-                        onClick={() => handleSetTextAlign("left")}
-                      >
-                        <AlignLeft className="" />
-                        <span className="text-xs">Left</span>
-                        <DropdownMenuShortcut>⌘ ⇧ L</DropdownMenuShortcut>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => handleSetTextAlign("center")}
-                      >
-                        <AlignCenter className="" />
-                        <span className="text-xs">Center</span>
-                        <DropdownMenuShortcut>⌘ ⇧ E</DropdownMenuShortcut>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => handleSetTextAlign("right")}
-                      >
-                        <AlignRight className="" />
-                        <span className="text-xs">Right</span>
-                        <DropdownMenuShortcut>⌘ ⇧ R</DropdownMenuShortcut>
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>Text alignment</p>
-                </TooltipContent>
-              </Tooltip>
+                      {editorState.isAlignLeft && <AlignLeft className="" />}
+                      {editorState.isAlignCenter && <AlignCenter className="" />}
+                      {editorState.isAlignRight && <AlignRight className="" />}
+                      {!editorState.isAlignLeft &&
+                        !editorState.isAlignCenter &&
+                        !editorState.isAlignRight && <AlignLeft className="" />}
+                    </PopoverTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Text alignment</p>
+                  </TooltipContent>
+                </Tooltip>
+                <PopoverContent
+                  align="start"
+                  side="bottom"
+                  sideOffset={4}
+                  className={editorMenuPopoverContentClassName("w-40")}
+                >
+                  <button
+                    type="button"
+                    className={editorMenuPopoverItemClassName}
+                    onClick={() => {
+                      handleSetTextAlign("left");
+                      setTextAlignOpen(false);
+                    }}
+                  >
+                    <AlignLeft className="" />
+                    <span>Left</span>
+                    <span className={editorMenuPopoverShortcutClassName}>
+                      ⌘ ⇧ L
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={editorMenuPopoverItemClassName}
+                    onClick={() => {
+                      handleSetTextAlign("center");
+                      setTextAlignOpen(false);
+                    }}
+                  >
+                    <AlignCenter className="" />
+                    <span>Center</span>
+                    <span className={editorMenuPopoverShortcutClassName}>
+                      ⌘ ⇧ E
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={editorMenuPopoverItemClassName}
+                    onClick={() => {
+                      handleSetTextAlign("right");
+                      setTextAlignOpen(false);
+                    }}
+                  >
+                    <AlignRight className="" />
+                    <span>Right</span>
+                    <span className={editorMenuPopoverShortcutClassName}>
+                      ⌘ ⇧ R
+                    </span>
+                  </button>
+                </PopoverContent>
+              </Popover>
             </div>
 
             {/* formatting */}

@@ -403,3 +403,40 @@
 .ProseMirror td > p {
   margin: 0;
 }
+
+/* Compact read-only markdown previews (e.g. project table description column) */
+.tiptap-editor--project-preview {
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.tiptap-editor--project-preview p {
+  margin: 0 0 0.35rem;
+}
+
+.tiptap-editor--project-preview h1,
+.tiptap-editor--project-preview h2,
+.tiptap-editor--project-preview h3,
+.tiptap-editor--project-preview h4 {
+  font-size: 0.8125rem;
+  line-height: 1.3;
+  margin: 0.35rem 0 0.2rem;
+}
+
+.tiptap-editor--project-preview ul,
+.tiptap-editor--project-preview ol {
+  margin: 0 0 0.35rem;
+  padding-left: 1.1rem;
+}
+
+.tiptap-editor--project-preview pre {
+  margin: 0.35rem 0;
+  padding: 0.4rem 0.55rem;
+  font-size: 0.6875rem;
+}
+
+.tiptap-editor--project-preview table {
+  margin: 0.35rem 0;
+  min-width: 0;
+  font-size: 0.6875rem;
+}
