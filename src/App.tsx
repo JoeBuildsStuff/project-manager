@@ -441,10 +441,12 @@ export default function App() {
               />
             </div>
           ) : view === "notes" ? (
-            <Notes
-              selectedNoteId={selectedNoteId}
-              onRefreshNotesList={refreshNotesList}
-            />
+            <div id="notes" tabIndex={-1} className="m-2 min-h-0 flex-1 outline-none">
+              <Notes
+                selectedNoteId={selectedNoteId}
+                onRefreshNotesList={refreshNotesList}
+              />
+            </div>
           ) : (
             <div id="project-table" tabIndex={-1} className="m-2 min-h-0 flex-1 outline-none">
               <ProjectTable

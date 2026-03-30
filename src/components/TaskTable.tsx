@@ -18,6 +18,7 @@ import {
   ArrowLeft,
   Plus,
   Search,
+  Type,
   Text,
   Activity,
   Flag,
@@ -25,7 +26,7 @@ import {
   Clock,
   Trash2,
   Loader2,
-  FolderKanban,
+  Kanban,
   Pencil,
 } from "lucide-react";
 import {
@@ -134,12 +135,29 @@ const columns: ColumnDef<Task>[] = [
       <DataTableColumnHeader
         column={column}
         title="Title"
-        icon={<Text className={iconProps} strokeWidth={1.5} />}
+        icon={<Type className={iconProps} strokeWidth={1.5} />}
       />
     ),
     cell: ({ getValue }) => (
       <div className="text-xs font-medium">{getValue() as string}</div>
     ),
+  },
+  {
+    accessorKey: "description",
+    enableSorting: false,
+    header: ({ column }) => (
+      <DataTableColumnHeader
+        column={column}
+        title="Description"
+        icon={<Text className={iconProps} strokeWidth={1.5} />}
+      />
+    ),
+    cell: ({ getValue }) => {
+      const v = getValue() as string | null;
+      return v ? (
+        <span className="block max-w-[300px] truncate text-xs text-muted-foreground">{v}</span>
+      ) : null;
+    },
   },
   {
     id: "project",
@@ -149,7 +167,7 @@ const columns: ColumnDef<Task>[] = [
       <DataTableColumnHeader
         column={column}
         title="Project"
-        icon={<FolderKanban className={iconProps} strokeWidth={1.5} />}
+        icon={<Kanban className={iconProps} strokeWidth={1.5} />}
       />
     ),
     cell: ({ row }) => (
@@ -199,23 +217,6 @@ const columns: ColumnDef<Task>[] = [
       />
     ),
     cell: ({ getValue }) => <TaskPriorityBadge priority={getValue() as string | null} />,
-  },
-  {
-    accessorKey: "description",
-    enableSorting: false,
-    header: ({ column }) => (
-      <DataTableColumnHeader
-        column={column}
-        title="Description"
-        icon={<Text className={iconProps} strokeWidth={1.5} />}
-      />
-    ),
-    cell: ({ getValue }) => {
-      const v = getValue() as string | null;
-      return v ? (
-        <span className="block max-w-[300px] truncate text-xs text-muted-foreground">{v}</span>
-      ) : null;
-    },
   },
   {
     accessorKey: "created_at",
@@ -542,6 +543,7 @@ export default function TaskTable({ project, allProjects, onBack }: Props) {
           <div className="flex items-center gap-3 border-b border-border px-3 py-2.5">
             <Skeleton className="h-4 w-4 rounded-[4px]" />
             <Skeleton className="h-3.5 w-[180px]" />
+            <Skeleton className="h-3.5 w-[300px]" />
             <Skeleton className="h-3.5 w-[100px]" />
             <Skeleton className="h-3.5 w-[80px]" />
             <Skeleton className="h-3.5 w-[80px]" />
@@ -550,6 +552,7 @@ export default function TaskTable({ project, allProjects, onBack }: Props) {
             <div key={i} className="flex items-center gap-3 border-b border-border/50 px-3 py-2.5">
               <Skeleton className="h-4 w-4 rounded-[4px]" />
               <Skeleton className="h-3.5 w-[180px]" />
+              <Skeleton className="h-3.5 w-[300px]" />
               <Skeleton className="h-3.5 w-[100px]" />
               <Skeleton className="h-3.5 w-[80px]" />
               <Skeleton className="h-3.5 w-[80px]" />
@@ -576,11 +579,11 @@ export default function TaskTable({ project, allProjects, onBack }: Props) {
                       className={cn(
                         header.column.id === "select" && "w-10 pl-3",
                         header.column.id === "title" && "w-[240px] pl-2",
+                        header.column.id === "description" && "w-[300px]",
                         header.column.id === "project" && "w-[160px]",
                         header.column.id === "kind" && "w-[100px]",
                         header.column.id === "status" && "w-[120px]",
                         header.column.id === "priority" && "w-[100px]",
-                        header.column.id === "description" && "w-[300px]",
                         header.column.id === "created_at" && "w-[100px]",
                       )}
                     >

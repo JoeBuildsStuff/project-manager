@@ -21,7 +21,7 @@ import {
   GitCommit,
   GitBranch,
   Clock,
-  FolderKanban,
+  Kanban,
   Pencil,
   Trash2,
   ListTodo,
@@ -175,7 +175,7 @@ const columns: ColumnDef<Project>[] = [
       <DataTableColumnHeader
         column={column}
         title="Category"
-        icon={<FolderKanban className={iconProps} strokeWidth={1.5} />}
+        icon={<Kanban className={iconProps} strokeWidth={1.5} />}
       />
     ),
     cell: ({ getValue }) => <CategoryBadge category={getValue() as string | null} />,

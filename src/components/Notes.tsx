@@ -105,6 +105,11 @@ export default function Notes({
     "idle" | "saving" | "saved" | "error"
   >("idle");
   const saveTimeoutRef = useRef<number | null>(null);
+  const selectedNoteIdRef = useRef<string | null>(selectedNoteId);
+
+  useEffect(() => {
+    selectedNoteIdRef.current = selectedNoteId;
+  }, [selectedNoteId]);
 
   useEffect(() => {
     if (saveTimeoutRef.current !== null) {
@@ -174,6 +179,10 @@ export default function Notes({
           content: nextContent,
         });
 
+        if (document.id !== selectedNoteIdRef.current) {
+          return;
+        }
+
         setDocument(updated);
         setTitle(updated.title);
         setContent(updated.content);
@@ -185,6 +194,10 @@ export default function Notes({
           setSaveState((current) => (current === "saved" ? "idle" : current));
         }, 1200);
       } catch {
+        if (document.id !== selectedNoteIdRef.current) {
+          setSaveState("idle");
+          return;
+        }
         setSaveState("error");
       }
     },
@@ -299,58 +312,67 @@ export default function Notes({
 
   return (
     <>
-      <div className="m-2 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border bg-background">
-        <div className="flex min-w-0 items-center gap-2 border-b px-3 py-2">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
+        <div className="flex min-w-0 items-center gap-2 py-1">
           <SidebarTrigger className="-ml-1 shrink-0" />
           {selectedNoteId && !loadError ? (
-            <ButtonGroup className="min-w-0 flex-1">
-              <NoteIconPicker
-                iconName={iconName}
-                isUpdating={isUpdatingIcon}
-                onSelect={handleIconSelect}
-              />
-              <Input
-                size="sm"
-                value={title}
-                onChange={(event) => handleTitleChange(event.target.value)}
-                onBlur={handleTitleBlur}
-                placeholder="Untitled"
-                aria-label="Note title"
-                className="min-w-0 flex-1"
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                type="button"
-                disabled={isDeleting}
-                aria-label="Delete note"
-                onClick={() => setDeleteOpen(true)}
-              >
-                <Trash className="size-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                type="button"
-                disabled={isUpdatingFavorite}
-                aria-label={
-                  isFavorite ? "Unfavorite note" : "Favorite note"
-                }
-                onClick={() => void handleToggleFavorite()}
-              >
-                <Heart
-                  className={`size-4 ${isFavorite ? "fill-current text-primary" : ""}`}
+            <>
+              <div className="empty:hidden shrink-0 text-xs text-muted-foreground">
+                {saveState === "saving" ? "Saving..." : null}
+                {saveState === "saved" ? "Saved" : null}
+                {saveState === "error" ? "Save failed" : null}
+              </div>
+              <ButtonGroup className="min-w-0 max-w-full w-full flex-1">
+                <NoteIconPicker
+                  iconName={iconName}
+                  isUpdating={isUpdatingIcon}
+                  onSelect={handleIconSelect}
                 />
-              </Button>
-            </ButtonGroup>
+                <Input
+                  size="sm"
+                  value={title}
+                  onChange={(event) => handleTitleChange(event.target.value)}
+                  onBlur={handleTitleBlur}
+                  placeholder="Untitled"
+                  aria-label="Note title"
+                  className="min-w-0 flex-1"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  disabled={isDeleting}
+                  aria-label="Delete note"
+                  onClick={() => setDeleteOpen(true)}
+                >
+                  <Trash className="size-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  disabled={isUpdatingFavorite}
+                  aria-label={
+                    isFavorite ? "Unfavorite note" : "Favorite note"
+                  }
+                  onClick={() => void handleToggleFavorite()}
+                >
+                  <Heart
+                    className={`size-4 ${isFavorite ? "fill-current text-primary" : ""}`}
+                  />
+                </Button>
+              </ButtonGroup>
+            </>
           ) : (
-            <h1 className="min-w-0 truncate text-sm font-medium">Notes</h1>
+            <>
+              <h1 className="min-w-0 truncate text-sm font-medium">Notes</h1>
+              <div className="ml-auto shrink-0 text-xs text-muted-foreground">
+                {saveState === "saving" ? "Saving..." : null}
+                {saveState === "saved" ? "Saved" : null}
+                {saveState === "error" ? "Save failed" : null}
+              </div>
+            </>
           )}
-          <div className="ml-auto shrink-0 text-xs text-muted-foreground">
-            {saveState === "saving" ? "Saving..." : null}
-            {saveState === "saved" ? "Saved" : null}
-            {saveState === "error" ? "Save failed" : null}
-          </div>
         </div>
 
         {!selectedNoteId ? (
@@ -365,26 +387,24 @@ export default function Notes({
             {loadError}
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col p-3">
-            <div className="min-h-0 flex-1 overflow-hidden">
-              {loadingDoc ? (
-                <div className="h-full rounded-md border bg-muted/30" />
-              ) : document ? (
-                <EditorErrorBoundary>
-                  <Tiptap
-                    content={content}
-                    onChange={handleContentChange}
-                    showFixedMenu
-                    showBubbleMenu
-                    enableFileNodes
-                    commentsDocumentId={document.id}
-                    attachmentsDocumentId={document.id}
-                  />
-                </EditorErrorBoundary>
-              ) : (
-                <div className="h-full rounded-md border bg-card" />
-              )}
-            </div>
+          <div className="mt-1 min-h-0 flex-1 overflow-hidden">
+            {loadingDoc ? (
+              <div className="h-full bg-muted/30" />
+            ) : document ? (
+              <EditorErrorBoundary>
+                <Tiptap
+                  content={content}
+                  onChange={handleContentChange}
+                  showFixedMenu
+                  showBubbleMenu
+                  enableFileNodes
+                  commentsDocumentId={document.id}
+                  attachmentsDocumentId={document.id}
+                />
+              </EditorErrorBoundary>
+            ) : (
+              <div className="h-full bg-card" />
+            )}
           </div>
         )}
       </div>

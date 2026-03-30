@@ -4,7 +4,7 @@ import {
   Inbox,
   BookOpen,
   Archive,
-  FolderKanban,
+  Kanban,
   Wrench,
   Database,
   Globe,
@@ -67,7 +67,7 @@ const CATEGORY_OPTIONS: {
   icon: React.ElementType;
 }[] = [
   { value: "all", label: "All categories", icon: Database },
-  { value: "project", label: "Projects", icon: FolderKanban },
+  { value: "project", label: "Projects", icon: Kanban },
   { value: "reference", label: "Reference", icon: BookOpen },
   { value: "tooling", label: "Tooling", icon: Wrench },
 ];

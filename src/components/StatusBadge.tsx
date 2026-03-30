@@ -1,5 +1,5 @@
 import {
-  Zap, Inbox, Archive, FolderKanban, BookOpen, Wrench, Globe, Server, Home,
+  Zap, Inbox, Archive, Kanban, BookOpen, Wrench, Globe, Server, Home,
   Lightbulb, Hammer, Target, TrendingUp, Layers, LayoutGrid, Expand, PauseCircle, TrendingDown, Skull, RotateCcw,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -27,7 +27,7 @@ const STATUS_CONFIG: Record<string, { variant: BadgeVariant; icon: React.Element
 };
 
 const CATEGORY_CONFIG: Record<string, { variant: BadgeVariant; icon: React.ElementType }> = {
-  project:   { variant: "indigo", icon: FolderKanban },
+  project:   { variant: "indigo", icon: Kanban },
   reference: { variant: "blue",   icon: BookOpen     },
   tooling:   { variant: "purple", icon: Wrench       },
 };

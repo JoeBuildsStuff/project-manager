@@ -1131,16 +1131,17 @@ pub fn save_notes_document(
     let workspace_root = workspace(&state)?;
     let trimmed_title = normalize_note_title(&title);
 
-    conn.execute(
-        "INSERT INTO notes_documents (id, title, content, created_at, updated_at)
-         VALUES (?1, ?2, ?3, datetime('now'), datetime('now'))
-         ON CONFLICT(id) DO UPDATE SET
-           title = excluded.title,
-           content = excluded.content,
-           updated_at = datetime('now')",
-        rusqlite::params![&id, &trimmed_title, &content],
-    )
-    .map_err(|e| e.to_string())?;
+    let updated = conn
+        .execute(
+            "UPDATE notes_documents SET title = ?2, content = ?3, updated_at = datetime('now')
+             WHERE id = ?1",
+            rusqlite::params![&id, &trimmed_title, &content],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if updated == 0 {
+        return Err("Document not found".into());
+    }
 
     cleanup_unreferenced_note_attachments(&conn, &workspace_root, &id, &content)?;
 
