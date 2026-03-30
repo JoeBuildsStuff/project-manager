@@ -4,8 +4,6 @@ import { useState } from "react";
 import { format, isToday, isYesterday } from "date-fns";
 import {
   EllipsisVertical,
-  List,
-  ListTodo,
   MoreVertical,
   Square,
   SquareCheckBig,
@@ -13,7 +11,8 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -21,18 +20,18 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
-  DropdownMenuLabel,
   DropdownMenuItem,
-  DropdownMenuTrigger,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
-} from "@/components/ui/dropdown-menu";
+  DropdownMenuTrigger,
+} from "@/components/tiptap/dropdown-menu-tiptap";
 import { isRichTextContentEmpty } from "@/components/tiptap/comment-content-utils";
 import { CommentInputEditor } from "@/components/tiptap/comment-input-editor";
 import type {
   Thread,
   ThreadVisibilityFilters,
 } from "@/components/tiptap/comment-thread-types";
-import { ButtonGroup, ButtonGroupSeparator } from "../ui/button-group";
+import { ButtonGroup } from "../ui/button-group";
 import { Skeleton } from "@/components/ui/skeleton";
 
 function formatCommentTimestamp(timestamp: string) {
@@ -189,17 +188,15 @@ export function CommentsPanel({
               >
                 <X className="size-4" />
               </Button>
-              {/* <ButtonGroupSeparator /> */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label="More Options"
-                    className="size-7 p-0"
-                  >
-                    <EllipsisVertical className="size-4" />
-                  </Button>
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger
+                  aria-label="More Options"
+                  className={cn(
+                    buttonVariants({ variant: "ghost", size: "sm" }),
+                    "size-7 p-0",
+                  )}
+                >
+                  <EllipsisVertical className="size-4" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-40">
                   <DropdownMenuGroup>
@@ -358,17 +355,16 @@ export function CommentsPanel({
                               : "Resolve thread"
                           }
                         />
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-7 w-7 p-0 text-muted-foreground"
-                              onClick={(event) => event.stopPropagation()}
-                              aria-label="Comment actions"
-                            >
-                              <MoreVertical className="size-4" />
-                            </Button>
+                        <DropdownMenu modal={false}>
+                          <DropdownMenuTrigger
+                            aria-label="Comment actions"
+                            className={cn(
+                              buttonVariants({ variant: "ghost", size: "sm" }),
+                              "h-7 w-7 p-0 text-muted-foreground",
+                            )}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <MoreVertical className="size-4" />
                           </DropdownMenuTrigger>
                           <DropdownMenuContent
                             align="end"
@@ -503,19 +499,21 @@ export function CommentsPanel({
                                   </div>
                                 </div>
                                 {reply.userId === currentUserId ? (
-                                  <DropdownMenu>
-                                    <DropdownMenuTrigger asChild>
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        className="h-7 w-7 shrink-0 p-0 text-muted-foreground"
-                                        onClick={(event) =>
-                                          event.stopPropagation()
-                                        }
-                                        aria-label="Reply actions"
-                                      >
-                                        <MoreVertical className="size-4" />
-                                      </Button>
+                                  <DropdownMenu modal={false}>
+                                    <DropdownMenuTrigger
+                                      aria-label="Reply actions"
+                                      className={cn(
+                                        buttonVariants({
+                                          variant: "ghost",
+                                          size: "sm",
+                                        }),
+                                        "h-7 w-7 shrink-0 p-0 text-muted-foreground",
+                                      )}
+                                      onClick={(event) =>
+                                        event.stopPropagation()
+                                      }
+                                    >
+                                      <MoreVertical className="size-4" />
                                     </DropdownMenuTrigger>
                                     <DropdownMenuContent
                                       align="end"

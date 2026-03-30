@@ -35,8 +35,7 @@ import { Button } from "@/components/ui/button";
 import { LinkButton } from "@/components/tiptap/link-button";
 import TableButton from "@/components/tiptap/table-button";
 import { CopyButton } from "@/components/ui/copy-button";
-import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
-import { ScrollBar } from "@/components/ui/scroll-area";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface FixedMenuProps {
   editor: Editor;
@@ -88,8 +87,7 @@ const FixedMenu = ({
   };
 
   return (
-    <ScrollAreaPrimitive.Root className="h-12 min-w-0 rounded-t-md border-b border-border bg-card">
-      <ScrollAreaPrimitive.Viewport className="rounded-[inherit]">
+    <ScrollArea className="h-12 min-w-0 rounded-t-md border-b border-border bg-card">
         <div className="flex h-full flex-row items-center justify-between p-2">
           <div className="flex flex-row gap-1">
             {/* type of node */}
@@ -387,10 +385,7 @@ const FixedMenu = ({
             />
           </div>
         </div>
-      </ScrollAreaPrimitive.Viewport>
-      <ScrollBar orientation="horizontal" />
-      <ScrollAreaPrimitive.Corner />
-    </ScrollAreaPrimitive.Root>
+    </ScrollArea>
   );
 };
 

@@ -48,7 +48,7 @@ export const CustomImageView = ({ node, selected, updateAttributes }: ReactNodeV
         setError(null)
         
         // If it's already a full URL, use it directly
-        if (src.startsWith('http')) {
+        if (src.startsWith('http') || src.startsWith('data:') || src.startsWith('blob:')) {
           setImageUrl(src)
           setIsLoading(false)
           return

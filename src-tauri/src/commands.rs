@@ -1,6 +1,7 @@
 use crate::config::{self, AppConfig};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -119,6 +120,7 @@ fn db_path(state: &WorkspaceState) -> Result<PathBuf, String> {
 fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     let path = db_path(state)?;
     let conn = Connection::open(&path).map_err(|e| e.to_string())?;
+    let _ = conn.execute("PRAGMA foreign_keys = ON", []);
     // Idempotent migration – add stage column if missing
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN stage TEXT", []);
 
@@ -159,6 +161,41 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
         "ALTER TABLE table_views ADD COLUMN context TEXT NOT NULL DEFAULT 'projects'",
         [],
     );
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS notes_documents (
+            id         TEXT PRIMARY KEY,
+            title      TEXT NOT NULL DEFAULT 'Workspace Notes',
+            content    TEXT NOT NULL DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS note_comment_threads (
+            id            TEXT PRIMARY KEY,
+            document_id   TEXT NOT NULL REFERENCES notes_documents(id) ON DELETE CASCADE,
+            created_by    TEXT NOT NULL,
+            status        TEXT NOT NULL DEFAULT 'unresolved',
+            anchor_from   INTEGER NOT NULL,
+            anchor_to     INTEGER NOT NULL,
+            anchor_exact  TEXT NOT NULL DEFAULT '',
+            anchor_prefix TEXT NOT NULL DEFAULT '',
+            anchor_suffix TEXT NOT NULL DEFAULT '',
+            resolved_at   TEXT,
+            created_at    TEXT DEFAULT (datetime('now')),
+            updated_at    TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS note_comments (
+            id         TEXT PRIMARY KEY,
+            thread_id  TEXT NOT NULL REFERENCES note_comment_threads(id) ON DELETE CASCADE,
+            user_id    TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );",
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(conn)
 }
@@ -229,6 +266,7 @@ pub fn set_workspace_path(
 
 fn initialize_db(db_file: &Path) -> Result<(), String> {
     let conn = Connection::open(db_file).map_err(|e| e.to_string())?;
+    let _ = conn.execute("PRAGMA foreign_keys = ON", []);
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS project_metadata (
             folder_key        TEXT PRIMARY KEY,
@@ -265,6 +303,38 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
             created_at        TEXT DEFAULT (datetime('now')),
             updated_at        TEXT DEFAULT (datetime('now')),
             completed_at      TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS notes_documents (
+            id         TEXT PRIMARY KEY,
+            title      TEXT NOT NULL DEFAULT 'Workspace Notes',
+            content    TEXT NOT NULL DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS note_comment_threads (
+            id            TEXT PRIMARY KEY,
+            document_id   TEXT NOT NULL REFERENCES notes_documents(id) ON DELETE CASCADE,
+            created_by    TEXT NOT NULL,
+            status        TEXT NOT NULL DEFAULT 'unresolved',
+            anchor_from   INTEGER NOT NULL,
+            anchor_to     INTEGER NOT NULL,
+            anchor_exact  TEXT NOT NULL DEFAULT '',
+            anchor_prefix TEXT NOT NULL DEFAULT '',
+            anchor_suffix TEXT NOT NULL DEFAULT '',
+            resolved_at   TEXT,
+            created_at    TEXT DEFAULT (datetime('now')),
+            updated_at    TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS note_comments (
+            id         TEXT PRIMARY KEY,
+            thread_id  TEXT NOT NULL REFERENCES note_comment_threads(id) ON DELETE CASCADE,
+            user_id    TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
         );",
     )
     .map_err(|e| e.to_string())?;
@@ -324,6 +394,202 @@ pub struct Project {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct NotesDocument {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommentCurrentUser {
+    pub id: String,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteComment {
+    pub id: String,
+    pub thread_id: String,
+    pub user_id: String,
+    pub content: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteCommentThread {
+    pub id: String,
+    pub document_id: String,
+    pub created_by: String,
+    pub status: String,
+    pub anchor_from: i64,
+    pub anchor_to: i64,
+    pub anchor_exact: String,
+    pub anchor_prefix: String,
+    pub anchor_suffix: String,
+    pub resolved_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub comments: Vec<NoteComment>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteCommentAnchorInput {
+    pub id: String,
+    pub anchor_from: i64,
+    pub anchor_to: i64,
+    pub anchor_exact: String,
+    pub anchor_prefix: String,
+    pub anchor_suffix: String,
+}
+
+fn local_comment_user() -> CommentCurrentUser {
+    let display_name = env::var("USER")
+        .ok()
+        .or_else(|| env::var("USERNAME").ok())
+        .or_else(|| env::var("LOGNAME").ok())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Local User".to_string());
+
+    CommentCurrentUser {
+        id: "local-user".to_string(),
+        display_name,
+        email: None,
+        avatar_url: None,
+    }
+}
+
+fn strip_rich_text(content: &str) -> String {
+    let mut text = String::with_capacity(content.len());
+    let mut in_tag = false;
+
+    for ch in content.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+
+    text
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .trim()
+        .to_string()
+}
+
+fn ensure_notes_document_exists(conn: &Connection, document_id: &str) -> Result<(), String> {
+    let exists = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_documents WHERE id = ?1)",
+            [document_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if exists == 0 {
+        return Err("Document not found".into());
+    }
+
+    Ok(())
+}
+
+fn map_note_comment(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteComment> {
+    Ok(NoteComment {
+        id: row.get(0)?,
+        thread_id: row.get(1)?,
+        user_id: row.get(2)?,
+        content: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
+fn get_note_comments_for_thread(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Vec<NoteComment>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, thread_id, user_id, content, created_at, updated_at
+             FROM note_comments
+             WHERE thread_id = ?1
+             ORDER BY created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([thread_id], map_note_comment)
+        .map_err(|e| e.to_string())?;
+
+    let mut comments = Vec::new();
+    for row in rows {
+        comments.push(row.map_err(|e| e.to_string())?);
+    }
+
+    Ok(comments)
+}
+
+fn get_note_comment_thread_by_id(
+    conn: &Connection,
+    document_id: &str,
+    thread_id: &str,
+) -> Result<NoteCommentThread, String> {
+    let thread = conn
+        .query_row(
+            "SELECT id, document_id, created_by, status, anchor_from, anchor_to,
+                    anchor_exact, anchor_prefix, anchor_suffix, resolved_at, created_at, updated_at
+             FROM note_comment_threads
+             WHERE id = ?1 AND document_id = ?2",
+            rusqlite::params![thread_id, document_id],
+            |row| {
+                Ok(NoteCommentThread {
+                    id: row.get(0)?,
+                    document_id: row.get(1)?,
+                    created_by: row.get(2)?,
+                    status: row.get(3)?,
+                    anchor_from: row.get(4)?,
+                    anchor_to: row.get(5)?,
+                    anchor_exact: row.get(6)?,
+                    anchor_prefix: row.get(7)?,
+                    anchor_suffix: row.get(8)?,
+                    resolved_at: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                    comments: Vec::new(),
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(NoteCommentThread {
+        comments: get_note_comments_for_thread(conn, thread_id)?,
+        ..thread
+    })
+}
+
+#[tauri::command]
+pub fn get_comment_current_user() -> Result<CommentCurrentUser, String> {
+    Ok(local_comment_user())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FilterOptions {
     pub deploy_platforms: Vec<String>,
     pub hosts: Vec<String>,
@@ -353,6 +619,446 @@ pub struct DeleteGuardrails {
     pub nested_tracked_rows: i64,
     pub commit_count: Option<i64>,
     pub last_commit_date: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_notes_document(state: tauri::State<'_, WorkspaceState>) -> Result<NotesDocument, String> {
+    const NOTES_DOCUMENT_ID: &str = "workspace";
+
+    let conn = open_db(&state)?;
+    conn.execute(
+        "INSERT INTO notes_documents (id, title, content)
+         VALUES (?1, 'Workspace Notes', '')
+         ON CONFLICT(id) DO NOTHING",
+        [NOTES_DOCUMENT_ID],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.query_row(
+        "SELECT id, title, content, created_at, updated_at
+         FROM notes_documents
+         WHERE id = ?1",
+        [NOTES_DOCUMENT_ID],
+        |row| {
+            Ok(NotesDocument {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                content: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_notes_document(
+    id: String,
+    title: String,
+    content: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NotesDocument, String> {
+    let conn = open_db(&state)?;
+    let trimmed_title = {
+        let value = title.trim();
+        if value.is_empty() {
+            "Workspace Notes".to_string()
+        } else {
+            value.to_string()
+        }
+    };
+
+    conn.execute(
+        "INSERT INTO notes_documents (id, title, content, created_at, updated_at)
+         VALUES (?1, ?2, ?3, datetime('now'), datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           content = excluded.content,
+           updated_at = datetime('now')",
+        rusqlite::params![&id, &trimmed_title, &content],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.query_row(
+        "SELECT id, title, content, created_at, updated_at
+         FROM notes_documents
+         WHERE id = ?1",
+        rusqlite::params![&id],
+        |row| {
+            Ok(NotesDocument {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                content: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_notes_comment_threads(
+    document_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<NoteCommentThread>, String> {
+    let conn = open_db(&state)?;
+    ensure_notes_document_exists(&conn, &document_id)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, document_id, created_by, status, anchor_from, anchor_to,
+                    anchor_exact, anchor_prefix, anchor_suffix, resolved_at, created_at, updated_at
+             FROM note_comment_threads
+             WHERE document_id = ?1
+             ORDER BY created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([&document_id], |row| {
+            Ok(NoteCommentThread {
+                id: row.get(0)?,
+                document_id: row.get(1)?,
+                created_by: row.get(2)?,
+                status: row.get(3)?,
+                anchor_from: row.get(4)?,
+                anchor_to: row.get(5)?,
+                anchor_exact: row.get(6)?,
+                anchor_prefix: row.get(7)?,
+                anchor_suffix: row.get(8)?,
+                resolved_at: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+                comments: Vec::new(),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut threads = Vec::new();
+    for row in rows {
+        let thread = row.map_err(|e| e.to_string())?;
+        let comments = get_note_comments_for_thread(&conn, &thread.id)?;
+        threads.push(NoteCommentThread { comments, ..thread });
+    }
+
+    Ok(threads)
+}
+
+#[tauri::command]
+pub fn create_notes_comment_thread(
+    document_id: String,
+    anchor_from: i64,
+    anchor_to: i64,
+    anchor_exact: String,
+    anchor_prefix: String,
+    anchor_suffix: String,
+    content: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NoteCommentThread, String> {
+    if anchor_to <= anchor_from {
+        return Err("Invalid anchor range".into());
+    }
+
+    if strip_rich_text(&content).is_empty() {
+        return Err("Comment content is required".into());
+    }
+
+    let current_user = local_comment_user();
+    let mut conn = open_db(&state)?;
+    ensure_notes_document_exists(&conn, &document_id)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let thread_id: String = tx
+        .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    let comment_id: String = tx
+        .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "INSERT INTO note_comment_threads (
+            id, document_id, created_by, status, anchor_from, anchor_to,
+            anchor_exact, anchor_prefix, anchor_suffix, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, 'unresolved', ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))",
+        rusqlite::params![
+            &thread_id,
+            &document_id,
+            &current_user.id,
+            anchor_from,
+            anchor_to,
+            &anchor_exact,
+            &anchor_prefix,
+            &anchor_suffix
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "INSERT INTO note_comments (
+            id, thread_id, user_id, content, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
+        rusqlite::params![&comment_id, &thread_id, &current_user.id, &content],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    get_note_comment_thread_by_id(&conn, &document_id, &thread_id)
+}
+
+#[tauri::command]
+pub fn update_notes_comment_thread(
+    document_id: String,
+    thread_id: String,
+    resolved: Option<bool>,
+    anchor_from: Option<i64>,
+    anchor_to: Option<i64>,
+    anchor_exact: Option<String>,
+    anchor_prefix: Option<String>,
+    anchor_suffix: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NoteCommentThread, String> {
+    let conn = open_db(&state)?;
+    ensure_notes_document_exists(&conn, &document_id)?;
+
+    let existing = get_note_comment_thread_by_id(&conn, &document_id, &thread_id)?;
+    let next_anchor_from = anchor_from.unwrap_or(existing.anchor_from);
+    let next_anchor_to = anchor_to.unwrap_or(existing.anchor_to);
+    if next_anchor_to <= next_anchor_from {
+        return Err("Invalid anchor range".into());
+    }
+
+    let next_status = match resolved {
+        Some(true) => "resolved",
+        Some(false) => "unresolved",
+        None => existing.status.as_str(),
+    };
+    let resolved_at_value = match resolved {
+        Some(true) => Some("datetime('now')"),
+        Some(false) => None,
+        None => existing.resolved_at.as_deref(),
+    };
+
+    let resolved_sql = match resolved_at_value {
+        Some("datetime('now')") => "datetime('now')".to_string(),
+        Some(value) => format!("'{}'", value.replace('\'', "''")),
+        None => "NULL".to_string(),
+    };
+
+    conn.execute(
+        &format!(
+            "UPDATE note_comment_threads
+             SET status = ?1,
+                 anchor_from = ?2,
+                 anchor_to = ?3,
+                 anchor_exact = ?4,
+                 anchor_prefix = ?5,
+                 anchor_suffix = ?6,
+                 resolved_at = {},
+                 updated_at = datetime('now')
+             WHERE id = ?7 AND document_id = ?8",
+            resolved_sql
+        ),
+        rusqlite::params![
+            next_status,
+            next_anchor_from,
+            next_anchor_to,
+            anchor_exact.unwrap_or(existing.anchor_exact),
+            anchor_prefix.unwrap_or(existing.anchor_prefix),
+            anchor_suffix.unwrap_or(existing.anchor_suffix),
+            &thread_id,
+            &document_id
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    get_note_comment_thread_by_id(&conn, &document_id, &thread_id)
+}
+
+#[tauri::command]
+pub fn delete_notes_comment_thread(
+    document_id: String,
+    thread_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let conn = open_db(&state)?;
+    ensure_notes_document_exists(&conn, &document_id)?;
+
+    conn.execute(
+        "DELETE FROM note_comment_threads WHERE id = ?1 AND document_id = ?2",
+        rusqlite::params![&thread_id, &document_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn create_notes_comment(
+    document_id: String,
+    thread_id: String,
+    content: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NoteCommentThread, String> {
+    if strip_rich_text(&content).is_empty() {
+        return Err("Comment content is required".into());
+    }
+
+    let current_user = local_comment_user();
+    let conn = open_db(&state)?;
+    ensure_notes_document_exists(&conn, &document_id)?;
+    get_note_comment_thread_by_id(&conn, &document_id, &thread_id)?;
+
+    let comment_id: String = conn
+        .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT INTO note_comments (
+            id, thread_id, user_id, content, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now'))",
+        rusqlite::params![&comment_id, &thread_id, &current_user.id, &content],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE note_comment_threads
+         SET updated_at = datetime('now')
+         WHERE id = ?1 AND document_id = ?2",
+        rusqlite::params![&thread_id, &document_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    get_note_comment_thread_by_id(&conn, &document_id, &thread_id)
+}
+
+#[tauri::command]
+pub fn update_notes_comment(
+    document_id: String,
+    thread_id: String,
+    comment_id: String,
+    content: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NoteCommentThread, String> {
+    if strip_rich_text(&content).is_empty() {
+        return Err("Comment content is required".into());
+    }
+
+    let current_user = local_comment_user();
+    let conn = open_db(&state)?;
+    ensure_notes_document_exists(&conn, &document_id)?;
+    get_note_comment_thread_by_id(&conn, &document_id, &thread_id)?;
+
+    let updated = conn
+        .execute(
+            "UPDATE note_comments
+             SET content = ?1, updated_at = datetime('now')
+             WHERE id = ?2 AND thread_id = ?3 AND user_id = ?4",
+            rusqlite::params![&content, &comment_id, &thread_id, &current_user.id],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if updated == 0 {
+        return Err("Comment not found".into());
+    }
+
+    conn.execute(
+        "UPDATE note_comment_threads
+         SET updated_at = datetime('now')
+         WHERE id = ?1 AND document_id = ?2",
+        rusqlite::params![&thread_id, &document_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    get_note_comment_thread_by_id(&conn, &document_id, &thread_id)
+}
+
+#[tauri::command]
+pub fn delete_notes_comment(
+    document_id: String,
+    thread_id: String,
+    comment_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let current_user = local_comment_user();
+    let conn = open_db(&state)?;
+    ensure_notes_document_exists(&conn, &document_id)?;
+
+    let remaining_comments: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM note_comments WHERE thread_id = ?1",
+            [&thread_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if remaining_comments <= 1 {
+        return Err("Delete the thread instead of its root comment".into());
+    }
+
+    let deleted = conn
+        .execute(
+            "DELETE FROM note_comments
+             WHERE id = ?1 AND thread_id = ?2 AND user_id = ?3",
+            rusqlite::params![&comment_id, &thread_id, &current_user.id],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if deleted == 0 {
+        return Err("Comment not found".into());
+    }
+
+    conn.execute(
+        "UPDATE note_comment_threads
+         SET updated_at = datetime('now')
+         WHERE id = ?1 AND document_id = ?2",
+        rusqlite::params![&thread_id, &document_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn sync_notes_comment_anchors(
+    document_id: String,
+    anchors: Vec<NoteCommentAnchorInput>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let mut conn = open_db(&state)?;
+    ensure_notes_document_exists(&conn, &document_id)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    for anchor in anchors {
+        if anchor.anchor_to <= anchor.anchor_from {
+            continue;
+        }
+
+        tx.execute(
+            "UPDATE note_comment_threads
+             SET anchor_from = ?1,
+                 anchor_to = ?2,
+                 anchor_exact = ?3,
+                 anchor_prefix = ?4,
+                 anchor_suffix = ?5,
+                 updated_at = datetime('now')
+             WHERE id = ?6 AND document_id = ?7",
+            rusqlite::params![
+                anchor.anchor_from,
+                anchor.anchor_to,
+                anchor.anchor_exact,
+                anchor.anchor_prefix,
+                anchor.anchor_suffix,
+                anchor.id,
+                &document_id
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

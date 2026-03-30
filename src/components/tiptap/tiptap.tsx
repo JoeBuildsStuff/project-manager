@@ -217,7 +217,8 @@ const Tiptap = ({
         if (
           typeof src === "string" &&
           !src.startsWith("http") &&
-          !src.startsWith("data:")
+          !src.startsWith("data:") &&
+          !src.startsWith("blob:")
         ) {
           deleteFile(src).catch((error: unknown) => {
             console.error("Failed to cleanup deleted file:", error);
@@ -301,7 +302,7 @@ const Tiptap = ({
           </div>
         )}
         <div className="py-2 px-3 h-full">
-          <div className="prose prose-base dark:prose-invert max-w-none">
+          <div className="tiptap-editor max-w-none">
             <Skeleton className="h-6 w-1/3 mb-4" />
             <Skeleton className="h-4 w-full mb-2" />
             <Skeleton className="h-4 w-3/4 mb-2" />
@@ -346,7 +347,7 @@ const Tiptap = ({
             ))}
 
           <ScrollArea className="flex-1 min-h-0">
-            <div className="py-2 px-6 prose prose-base dark:prose-invert max-w-none">
+            <div className="tiptap-editor max-w-none px-6 py-2">
               <EditorContent
                 editor={editor}
                 className="[&_a:hover]:cursor-pointer"

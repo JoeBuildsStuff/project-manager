@@ -1,10 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { Editor } from "@tiptap/core";
-import type { User } from "@supabase/supabase-js";
 import { toast } from "sonner";
-import { createClient } from "@/lib/supabase/client";
 import {
   CommentAnchors,
   getCommentThreadAnchors,
@@ -31,6 +30,13 @@ type UseDocumentCommentsOptions = {
   threadFilters?: ThreadVisibilityFilters;
 };
 
+type LocalCommentUser = {
+  id: string;
+  displayName: string;
+  email?: string | null;
+  avatarUrl?: string | null;
+};
+
 export function useDocumentComments({
   documentId,
   threadFilters,
@@ -39,8 +45,7 @@ export function useDocumentComments({
   const lastSyncedAnchorsRef = useRef<string>("");
   const composerRef = useRef<HTMLDivElement | null>(null);
 
-  const supabase = useMemo(() => createClient(), []);
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUser, setCurrentUser] = useState<LocalCommentUser | null>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -54,15 +59,8 @@ export function useDocumentComments({
   const [isSubmittingComposer, setIsSubmittingComposer] = useState(false);
 
   const currentUserId = currentUser?.id ?? null;
-  const metadata = currentUser?.user_metadata as
-    | { full_name?: string; name?: string; avatar_url?: string }
-    | undefined;
-  const displayName =
-    metadata?.full_name?.trim() ||
-    metadata?.name?.trim() ||
-    currentUser?.email ||
-    "User";
-  const currentUserAvatarUrl = metadata?.avatar_url?.trim() || null;
+  const displayName = currentUser?.displayName?.trim() || currentUser?.email || "User";
+  const currentUserAvatarUrl = currentUser?.avatarUrl?.trim() || null;
   const initials =
     displayName
       .split(/\s+/)
@@ -84,18 +82,10 @@ export function useDocumentComments({
 
     setIsLoadingThreads(true);
     try {
-      const response = await fetch(`/api/documents/${documentId}/threads`);
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(
-          typeof payload.error === "string"
-            ? payload.error
-            : "Failed to load comments"
-        );
-      }
-
-      const payload = (await response.json()) as { threads: Thread[] };
-      setThreads(payload.threads);
+      const payload = await invoke<Thread[]>("list_notes_comment_threads", {
+        documentId,
+      });
+      setThreads(payload);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to load comments";
@@ -141,21 +131,10 @@ export function useDocumentComments({
     }
 
     try {
-      const response = await fetch(
-        `/api/documents/${documentId}/threads/anchors`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ anchors: payload }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to sync comment anchors");
-      }
-
+      await invoke("sync_notes_comment_anchors", {
+        documentId,
+        anchors: payload,
+      });
       lastSyncedAnchorsRef.current = serialized;
     } catch (error) {
       console.error(error);
@@ -179,33 +158,17 @@ export function useDocumentComments({
         throw new Error("Missing document id");
       }
 
-      const response = await fetch(`/api/documents/${documentId}/threads`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+      const thread = await invoke<Thread>("create_notes_comment_thread", {
+        documentId,
           anchorFrom: selection.anchorFrom,
           anchorTo: selection.anchorTo,
           anchorExact: selection.anchorExact,
           anchorPrefix: selection.anchorPrefix,
           anchorSuffix: selection.anchorSuffix,
           content,
-        }),
       });
-
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(
-          typeof payload.error === "string"
-            ? payload.error
-            : "Failed to create thread"
-        );
-      }
-
-      const payload = (await response.json()) as { thread: Thread };
       await refreshThreads();
-      setSelectedThreadId(payload.thread.id);
+      setSelectedThreadId(thread.id);
     },
     [documentId, refreshThreads]
   );
@@ -263,21 +226,11 @@ export function useDocumentComments({
       }
 
       try {
-        const response = await fetch(
-          `/api/documents/${documentId}/threads/${threadId}`,
-          {
-            method: "PATCH",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ resolved }),
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error("Failed to update thread");
-        }
-
+        await invoke("update_notes_comment_thread", {
+          documentId,
+          threadId,
+          resolved,
+        });
         await refreshThreads();
       } catch (error) {
         const message =
@@ -295,17 +248,10 @@ export function useDocumentComments({
       }
 
       try {
-        const response = await fetch(
-          `/api/documents/${documentId}/threads/${threadId}`,
-          {
-            method: "DELETE",
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error("Failed to delete thread");
-        }
-
+        await invoke("delete_notes_comment_thread", {
+          documentId,
+          threadId,
+        });
         if (selectedThreadId === threadId) {
           setSelectedThreadId(null);
           editor?.commands.selectCommentThread(null);
@@ -326,29 +272,19 @@ export function useDocumentComments({
       return;
     }
 
-    if (isRichTextContentEmpty(replyContent)) {
-      return;
-    }
-
-    try {
-      const response = await fetch(
-        `/api/documents/${documentId}/threads/${selectedThread.id}/comments`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ content: replyContent }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to add reply");
+      if (isRichTextContentEmpty(replyContent)) {
+        return;
       }
 
-      setReplyContent("");
-      await refreshThreads();
-    } catch (error) {
+      try {
+        await invoke("create_notes_comment", {
+          documentId,
+          threadId: selectedThread.id,
+          content: replyContent,
+        });
+        setReplyContent("");
+        await refreshThreads();
+      } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to add reply";
       toast.error(message);
@@ -362,17 +298,11 @@ export function useDocumentComments({
       }
 
       try {
-        const response = await fetch(
-          `/api/documents/${documentId}/threads/${threadId}/comments/${commentId}`,
-          {
-            method: "DELETE",
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error("Failed to delete comment");
-        }
-
+        await invoke("delete_notes_comment", {
+          documentId,
+          threadId,
+          commentId,
+        });
         await refreshThreads();
       } catch (error) {
         const message =
@@ -395,21 +325,12 @@ export function useDocumentComments({
       }
 
       try {
-        const response = await fetch(
-          `/api/documents/${documentId}/threads/${threadId}/comments/${commentId}`,
-          {
-            method: "PATCH",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ content }),
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error("Failed to update comment");
-        }
-
+        await invoke("update_notes_comment", {
+          documentId,
+          threadId,
+          commentId,
+          content,
+        });
         await refreshThreads();
         return true;
       } catch (error) {
@@ -435,23 +356,27 @@ export function useDocumentComments({
   useEffect(() => {
     let cancelled = false;
 
-    void supabase.auth.getUser().then(({ data }) => {
-      if (!cancelled) {
-        setCurrentUser(data.user ?? null);
-      }
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setCurrentUser(session?.user ?? null);
-    });
+    void invoke<LocalCommentUser>("get_comment_current_user")
+      .then((user) => {
+        if (!cancelled) {
+          setCurrentUser(user);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCurrentUser({
+            id: "local-user",
+            displayName: "Local User",
+            email: null,
+            avatarUrl: null,
+          });
+        }
+      });
 
     return () => {
       cancelled = true;
-      subscription.unsubscribe();
     };
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     if (!documentId) {

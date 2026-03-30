@@ -1,6 +1,6 @@
 "use client"
 
-import type { RefObject } from "react"
+import type { Ref } from "react"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { isRichTextContentEmpty } from "@/components/tiptap/comment-content-utils"
@@ -11,7 +11,7 @@ type ComposerUser = {
 }
 
 type CommentComposerPopoverProps = {
-  composerRef: RefObject<HTMLDivElement | null>
+  composerRef: Ref<HTMLDivElement>
   left: number
   top: number
   initials: string
