@@ -1,4 +1,4 @@
-import { FileText, FolderKanban, ListTodo, Settings } from "lucide-react";
+import { Check, File, Kanban, Settings, SquareCheckBig } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -19,6 +19,8 @@ import { Button } from "@/components/ui/button";
 import type { StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, Project } from "../../types";
 import { ProjectSidebarContent } from "./ProjectSidebarContent";
 import { TaskSidebarContent } from "./TaskSidebarContent";
+import { NotesSidebarContent } from "./NotesSidebarContent";
+import type { NotesDocumentSummary } from "@/types";
 
 interface UpdateInfo {
   version: string;
@@ -44,9 +46,13 @@ export interface AppSidebarProps {
   onJumpToProjects?: () => void;
   onJumpToTasks?: () => void;
   onJumpToNotes?: () => void;
-  canJumpToTasks?: boolean;
   activeView?: string;
   taskProject?: Project | null;
+  notesList?: NotesDocumentSummary[];
+  selectedNoteId?: string | null;
+  onSelectNoteId?: (id: string) => void;
+  onCreateNote?: () => void;
+  notesListLoading?: boolean;
 }
 
 export default function AppSidebar({
@@ -68,11 +74,16 @@ export default function AppSidebar({
   onJumpToProjects,
   onJumpToTasks,
   onJumpToNotes,
-  canJumpToTasks,
   activeView,
   taskProject,
+  notesList = [],
+  selectedNoteId = null,
+  onSelectNoteId,
+  onCreateNote,
+  notesListLoading = false,
 }: AppSidebarProps) {
-  const isTaskView = activeView === "tasks" && taskProject;
+  const isTaskView = activeView === "tasks";
+  const isNotesView = activeView === "notes";
 
   return (
     <Sidebar
@@ -95,7 +106,7 @@ export default function AppSidebar({
                   className="w-full"
                   tooltip="Project table"
                 >
-                  <FolderKanban className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <Kanban className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span>Project Table</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -106,7 +117,7 @@ export default function AppSidebar({
                   className="w-full"
                   tooltip="Notes"
                 >
-                  <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span>Notes</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -114,11 +125,10 @@ export default function AppSidebar({
                 <SidebarMenuButton
                   isActive={activeView === "tasks"}
                   onClick={onJumpToTasks}
-                  disabled={!canJumpToTasks}
                   className="w-full"
-                  tooltip={canJumpToTasks ? "Task table" : "Select a project to open tasks"}
+                  tooltip="Task table"
                 >
-                  <ListTodo className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span>Task Table</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
@@ -127,7 +137,15 @@ export default function AppSidebar({
         </SidebarGroup>
 
         {isTaskView ? (
-          <TaskSidebarContent project={taskProject} />
+          <TaskSidebarContent project={taskProject ?? null} />
+        ) : isNotesView ? (
+          <NotesSidebarContent
+            notes={notesList}
+            selectedId={selectedNoteId}
+            onSelect={onSelectNoteId ?? (() => {})}
+            onCreate={onCreateNote ?? (() => {})}
+            loading={notesListLoading}
+          />
         ) : (
           <ProjectSidebarContent
             statusFilter={statusFilter}

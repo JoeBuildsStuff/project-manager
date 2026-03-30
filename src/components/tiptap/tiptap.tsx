@@ -301,7 +301,7 @@ const Tiptap = ({
     <div
       className={
         commentsEnabled
-          ? "flex h-full min-h-0 gap-2"
+          ? `flex h-full min-h-0 ${effectiveShowComments ? "gap-2" : "gap-0"}`
           : "h-full min-h-0"
       }
     >

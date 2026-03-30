@@ -215,6 +215,16 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     )
     .map_err(|e| e.to_string())?;
 
+    // Idempotent migrations: note icon & favorite (matches local-first multi-note UI)
+    let _ = conn.execute(
+        "ALTER TABLE notes_documents ADD COLUMN icon_name TEXT NOT NULL DEFAULT 'utensils-crossed'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE notes_documents ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+
     Ok(conn)
 }
 
@@ -430,13 +440,94 @@ pub struct Project {
     pub stage: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NotesDocument {
     pub id: String,
     pub title: String,
     pub content: String,
     pub created_at: String,
     pub updated_at: String,
+    pub icon_name: String,
+    pub is_favorite: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NotesDocumentSummary {
+    pub id: String,
+    pub title: String,
+    pub icon_name: String,
+    pub is_favorite: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+const NOTES_WORKSPACE_ID: &str = "workspace";
+
+const NOTE_ICON_NAMES: &[&str] = &[
+    "utensils-crossed",
+    "chef-hat",
+    "beef",
+    "drumstick",
+    "fish",
+    "salad",
+    "carrot",
+    "apple",
+    "pizza",
+    "sandwich",
+    "soup",
+    "croissant",
+    "cookie",
+    "ice-cream-cone",
+    "coffee",
+];
+
+fn is_valid_note_icon(name: &str) -> bool {
+    NOTE_ICON_NAMES.iter().any(|&n| n == name)
+}
+
+fn normalize_note_title(raw: &str) -> String {
+    let value = raw.trim();
+    if value.is_empty() {
+        "Untitled".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn map_notes_document_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NotesDocument> {
+    let is_favorite_int: i64 = row.get(6)?;
+    Ok(NotesDocument {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        content: row.get(2)?,
+        created_at: row.get(3)?,
+        updated_at: row.get(4)?,
+        icon_name: row.get(5)?,
+        is_favorite: is_favorite_int != 0,
+    })
+}
+
+fn map_notes_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NotesDocumentSummary> {
+    let is_favorite_int: i64 = row.get(3)?;
+    Ok(NotesDocumentSummary {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        icon_name: row.get(2)?,
+        is_favorite: is_favorite_int != 0,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
+fn ensure_workspace_notes_seed(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO notes_documents (id, title, content)
+         VALUES (?1, 'Workspace Notes', '')
+         ON CONFLICT(id) DO NOTHING",
+        [NOTES_WORKSPACE_ID],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -687,6 +778,28 @@ fn delete_note_attachment_internal(
     Ok(())
 }
 
+fn remove_attachments_for_document(
+    conn: &Connection,
+    workspace_root: &Path,
+    document_id: &str,
+) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM note_attachments WHERE document_id = ?1")
+        .map_err(|e| e.to_string())?;
+
+    let ids: Vec<String> = stmt
+        .query_map([document_id], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    for attachment_id in ids {
+        delete_note_attachment_internal(conn, workspace_root, &attachment_id)?;
+    }
+
+    Ok(())
+}
+
 fn cleanup_unreferenced_note_attachments(
     conn: &Connection,
     workspace_root: &Path,
@@ -829,34 +942,180 @@ pub struct DeleteGuardrails {
 }
 
 #[tauri::command]
-pub fn get_notes_document(
+pub fn list_notes_documents(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<NotesDocumentSummary>, String> {
+    let conn = open_db(&state)?;
+    ensure_workspace_notes_seed(&conn)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, icon_name, is_favorite, created_at, updated_at
+             FROM notes_documents
+             ORDER BY is_favorite DESC, updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| map_notes_summary_row(row))
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn get_notes_document_by_id(
+    id: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<NotesDocument, String> {
-    const NOTES_DOCUMENT_ID: &str = "workspace";
-
     let conn = open_db(&state)?;
-    conn.execute(
-        "INSERT INTO notes_documents (id, title, content)
-         VALUES (?1, 'Workspace Notes', '')
-         ON CONFLICT(id) DO NOTHING",
-        [NOTES_DOCUMENT_ID],
-    )
-    .map_err(|e| e.to_string())?;
+    ensure_workspace_notes_seed(&conn)?;
 
     conn.query_row(
-        "SELECT id, title, content, created_at, updated_at
+        "SELECT id, title, content, created_at, updated_at, icon_name, is_favorite
          FROM notes_documents
          WHERE id = ?1",
-        [NOTES_DOCUMENT_ID],
+        [&id],
         |row| {
+            let is_favorite_int: i64 = row.get(6)?;
             Ok(NotesDocument {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 content: row.get(2)?,
                 created_at: row.get(3)?,
                 updated_at: row.get(4)?,
+                icon_name: row.get(5)?,
+                is_favorite: is_favorite_int != 0,
             })
         },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_notes_document(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NotesDocument, String> {
+    let conn = open_db(&state)?;
+    ensure_workspace_notes_seed(&conn)?;
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let id = format!("n{nanos:x}");
+
+    conn.execute(
+        "INSERT INTO notes_documents (id, title, content, icon_name, is_favorite)
+         VALUES (?1, 'My Note', '', 'utensils-crossed', 0)",
+        [&id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.query_row(
+        "SELECT id, title, content, created_at, updated_at, icon_name, is_favorite
+         FROM notes_documents
+         WHERE id = ?1",
+        [&id],
+        |row| {
+            let is_favorite_int: i64 = row.get(6)?;
+            Ok(NotesDocument {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                content: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                icon_name: row.get(5)?,
+                is_favorite: is_favorite_int != 0,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_notes_document(
+    id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let conn = open_db(&state)?;
+    let workspace_root = workspace(&state)?;
+
+    remove_attachments_for_document(&conn, &workspace_root, &id)?;
+
+    let deleted = conn
+        .execute("DELETE FROM notes_documents WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+
+    if deleted == 0 {
+        return Err("Document not found".into());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_notes_document_favorite(
+    id: String,
+    is_favorite: bool,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NotesDocumentSummary, String> {
+    let conn = open_db(&state)?;
+    let fav_int: i64 = if is_favorite { 1 } else { 0 };
+
+    let updated = conn
+        .execute(
+            "UPDATE notes_documents SET is_favorite = ?1, updated_at = datetime('now') WHERE id = ?2",
+            rusqlite::params![fav_int, &id],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if updated == 0 {
+        return Err("Document not found".into());
+    }
+
+    conn.query_row(
+        "SELECT id, title, icon_name, is_favorite, created_at, updated_at
+         FROM notes_documents
+         WHERE id = ?1",
+        [&id],
+        |row| map_notes_summary_row(row),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_notes_document_icon(
+    id: String,
+    icon_name: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NotesDocumentSummary, String> {
+    if !is_valid_note_icon(&icon_name) {
+        return Err("Invalid note icon".into());
+    }
+
+    let conn = open_db(&state)?;
+    let updated = conn
+        .execute(
+            "UPDATE notes_documents SET icon_name = ?1, updated_at = datetime('now') WHERE id = ?2",
+            rusqlite::params![&icon_name, &id],
+        )
+        .map_err(|e| e.to_string())?;
+
+    if updated == 0 {
+        return Err("Document not found".into());
+    }
+
+    conn.query_row(
+        "SELECT id, title, icon_name, is_favorite, created_at, updated_at
+         FROM notes_documents
+         WHERE id = ?1",
+        [&id],
+        |row| map_notes_summary_row(row),
     )
     .map_err(|e| e.to_string())
 }
@@ -870,14 +1129,7 @@ pub fn save_notes_document(
 ) -> Result<NotesDocument, String> {
     let conn = open_db(&state)?;
     let workspace_root = workspace(&state)?;
-    let trimmed_title = {
-        let value = title.trim();
-        if value.is_empty() {
-            "Workspace Notes".to_string()
-        } else {
-            value.to_string()
-        }
-    };
+    let trimmed_title = normalize_note_title(&title);
 
     conn.execute(
         "INSERT INTO notes_documents (id, title, content, created_at, updated_at)
@@ -893,19 +1145,11 @@ pub fn save_notes_document(
     cleanup_unreferenced_note_attachments(&conn, &workspace_root, &id, &content)?;
 
     conn.query_row(
-        "SELECT id, title, content, created_at, updated_at
+        "SELECT id, title, content, created_at, updated_at, icon_name, is_favorite
          FROM notes_documents
          WHERE id = ?1",
         rusqlite::params![&id],
-        |row| {
-            Ok(NotesDocument {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                content: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-            })
-        },
+        |row| map_notes_document_row(row),
     )
     .map_err(|e| e.to_string())
 }
@@ -2439,6 +2683,8 @@ pub fn get_diff_stats(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<Dif
 pub struct Task {
     pub id: i64,
     pub folder_key: String,
+    /// Display name from `project_metadata` (joined in list/detail queries).
+    pub folder_name: Option<String>,
     pub kind: String,
     pub title: String,
     pub description: Option<String>,
@@ -2486,52 +2732,59 @@ pub fn get_task_counts(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<Ta
     Ok(counts)
 }
 
-#[tauri::command]
-pub fn get_tasks(
-    folder_key: String,
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<Vec<Task>, String> {
-    let conn = open_db(&state)?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, folder_key, kind, title, description, status, priority,
-                    created_at, updated_at, completed_at
-             FROM tasks
-             WHERE folder_key = ?1
+fn map_task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+    Ok(Task {
+        id: row.get(0)?,
+        folder_key: row.get(1)?,
+        folder_name: row.get(2)?,
+        kind: row.get(3)?,
+        title: row.get(4)?,
+        description: row.get(5)?,
+        status: row.get(6)?,
+        priority: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        completed_at: row.get(10)?,
+    })
+}
+
+const TASK_LIST_ORDER: &str = "
              ORDER BY
-                CASE status
+                CASE t.status
                     WHEN 'in-progress' THEN 0
                     WHEN 'open' THEN 1
                     WHEN 'done' THEN 2
                     WHEN 'closed' THEN 3
                     ELSE 4
                 END,
-                CASE priority
+                CASE t.priority
                     WHEN 'urgent' THEN 0
                     WHEN 'high' THEN 1
                     WHEN 'medium' THEN 2
                     WHEN 'low' THEN 3
                     ELSE 4
                 END,
-                created_at DESC",
-        )
-        .map_err(|e| e.to_string())?;
+                t.created_at DESC";
+
+#[tauri::command]
+pub fn get_tasks(
+    folder_key: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<Task>, String> {
+    let conn = open_db(&state)?;
+    let sql = format!(
+        "SELECT t.id, t.folder_key, m.folder_name, t.kind, t.title, t.description, t.status, t.priority,
+                t.created_at, t.updated_at, t.completed_at
+         FROM tasks t
+         LEFT JOIN project_metadata m ON m.folder_key = t.folder_key
+         WHERE (?1 IS NULL OR t.folder_key = ?1)
+         {}",
+        TASK_LIST_ORDER
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
     let rows = stmt
-        .query_map([&folder_key], |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                folder_key: row.get(1)?,
-                kind: row.get(2)?,
-                title: row.get(3)?,
-                description: row.get(4)?,
-                status: row.get(5)?,
-                priority: row.get(6)?,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
-                completed_at: row.get(9)?,
-            })
-        })
+        .query_map(rusqlite::params![folder_key], map_task_row)
         .map_err(|e| e.to_string())?;
 
     let mut tasks = Vec::new();
@@ -2564,24 +2817,13 @@ pub fn create_task(
     let id = conn.last_insert_rowid();
     let task = conn
         .query_row(
-            "SELECT id, folder_key, kind, title, description, status, priority,
-                    created_at, updated_at, completed_at
-             FROM tasks WHERE id = ?1",
+            "SELECT t.id, t.folder_key, m.folder_name, t.kind, t.title, t.description, t.status, t.priority,
+                    t.created_at, t.updated_at, t.completed_at
+             FROM tasks t
+             LEFT JOIN project_metadata m ON m.folder_key = t.folder_key
+             WHERE t.id = ?1",
             [id],
-            |row| {
-                Ok(Task {
-                    id: row.get(0)?,
-                    folder_key: row.get(1)?,
-                    kind: row.get(2)?,
-                    title: row.get(3)?,
-                    description: row.get(4)?,
-                    status: row.get(5)?,
-                    priority: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                    completed_at: row.get(9)?,
-                })
-            },
+            map_task_row,
         )
         .map_err(|e| e.to_string())?;
 
@@ -2645,24 +2887,13 @@ pub fn update_task(
 
     let task = conn
         .query_row(
-            "SELECT id, folder_key, kind, title, description, status, priority,
-                    created_at, updated_at, completed_at
-             FROM tasks WHERE id = ?1",
+            "SELECT t.id, t.folder_key, m.folder_name, t.kind, t.title, t.description, t.status, t.priority,
+                    t.created_at, t.updated_at, t.completed_at
+             FROM tasks t
+             LEFT JOIN project_metadata m ON m.folder_key = t.folder_key
+             WHERE t.id = ?1",
             [id],
-            |row| {
-                Ok(Task {
-                    id: row.get(0)?,
-                    folder_key: row.get(1)?,
-                    kind: row.get(2)?,
-                    title: row.get(3)?,
-                    description: row.get(4)?,
-                    status: row.get(5)?,
-                    priority: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                    completed_at: row.get(9)?,
-                })
-            },
+            map_task_row,
         )
         .map_err(|e| e.to_string())?;
 

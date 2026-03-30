@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import type { Project } from "../../types";
 
 export interface TaskSidebarContentProps {
-  project: Project;
+  project: Project | null;
 }
 
 export function TaskSidebarContent({ project }: TaskSidebarContentProps) {
@@ -34,7 +34,9 @@ export function TaskSidebarContent({ project }: TaskSidebarContentProps) {
       <SidebarGroup>
         <SidebarGroupContent>
           <div className="px-2 py-1.5">
-            <span className="text-xs font-semibold">{project.folder_name}</span>
+            <span className="text-xs font-semibold">
+              {project ? project.folder_name : "All projects"}
+            </span>
           </div>
         </SidebarGroupContent>
       </SidebarGroup>

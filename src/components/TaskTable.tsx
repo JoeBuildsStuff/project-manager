@@ -12,6 +12,7 @@ import {
   type ColumnDef,
   type ColumnFiltersState,
   type VisibilityState,
+  type RowSelectionState,
 } from "@tanstack/react-table";
 import {
   ArrowLeft,
@@ -23,11 +24,9 @@ import {
   Tag,
   Clock,
   Trash2,
-  Check,
-  Circle,
   Loader2,
-  CheckCircle2,
-  XCircle,
+  FolderKanban,
+  Pencil,
 } from "lucide-react";
 import {
   Table,
@@ -37,9 +36,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   InputGroup,
@@ -67,76 +65,17 @@ import { DataTableViewOptions } from "@/components/ui/data-table-view-options";
 import { cn } from "@/lib/utils";
 import type { Task, Project } from "@/types";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { ModeToggle } from "@/components/mode-toggle";
 import ActiveFilters from "./ActiveFilters";
 import SavedViewPicker from "./SavedViewPicker";
+import TaskDetail from "./TaskDetail";
+import { TaskKindBadge, TaskPriorityBadge, TaskStatusBadge } from "./task-badges";
 import type { SavedView } from "@/types";
 
 interface Props {
-  project: Project;
+  /** When set, lists and new tasks are scoped to this project; when null, all tasks in the workspace. */
+  project: Project | null;
+  allProjects: Project[];
   onBack: () => void;
-}
-
-type BadgeVariant =
-  | "default"
-  | "secondary"
-  | "destructive"
-  | "outline"
-  | "gray"
-  | "red"
-  | "yellow"
-  | "orange"
-  | "amber"
-  | "green"
-  | "blue"
-  | "indigo"
-  | "purple"
-  | "pink";
-
-const STATUS_BADGE: Record<string, { variant: BadgeVariant; icon: React.ElementType }> = {
-  open:          { variant: "blue",   icon: Circle },
-  "in-progress": { variant: "yellow", icon: Loader2 },
-  done:          { variant: "green",  icon: CheckCircle2 },
-  closed:        { variant: "gray",   icon: XCircle },
-};
-
-const PRIORITY_BADGE: Record<string, { variant: BadgeVariant; label: string }> = {
-  urgent: { variant: "red",    label: "Urgent" },
-  high:   { variant: "orange", label: "High" },
-  medium: { variant: "yellow", label: "Medium" },
-  low:    { variant: "gray",   label: "Low" },
-};
-
-const KIND_BADGE: Record<string, { variant: BadgeVariant; label: string }> = {
-  task:        { variant: "blue",   label: "Task" },
-  issue:       { variant: "red",    label: "Issue" },
-  request:     { variant: "purple", label: "Request" },
-  "next-step": { variant: "green",  label: "Next Step" },
-};
-
-function TaskStatusBadge({ status }: { status: string }) {
-  const cfg = STATUS_BADGE[status];
-  if (!cfg) return <Badge variant="gray" className="text-[11px] font-medium">{status}</Badge>;
-  const Icon = cfg.icon;
-  return (
-    <Badge variant={cfg.variant} className="gap-1 text-[11px] font-medium">
-      <Icon className={cn("h-2.5 w-2.5", status === "in-progress" && "animate-spin")} />
-      {status}
-    </Badge>
-  );
-}
-
-function TaskPriorityBadge({ priority }: { priority: string | null }) {
-  if (!priority) return null;
-  const cfg = PRIORITY_BADGE[priority];
-  if (!cfg) return <Badge variant="gray" className="text-[11px] font-medium">{priority}</Badge>;
-  return <Badge variant={cfg.variant} className="text-[11px] font-medium">{cfg.label}</Badge>;
-}
-
-function TaskKindBadge({ kind }: { kind: string }) {
-  const cfg = KIND_BADGE[kind];
-  if (!cfg) return <Badge variant="gray" className="text-[11px] font-medium">{kind}</Badge>;
-  return <Badge variant={cfg.variant} className="text-[11px] font-medium">{cfg.label}</Badge>;
 }
 
 function relativeDate(iso: string | null): string {
@@ -169,6 +108,26 @@ const facetedUniqueValues = getFacetedUniqueValues<Task>();
 
 const columns: ColumnDef<Task>[] = [
   {
+    id: "select",
+    enableSorting: false,
+    enableHiding: false,
+    header: ({ table }) => (
+      <Checkbox
+        checked={table.getIsAllPageRowsSelected()}
+        onCheckedChange={(checked) => table.toggleAllPageRowsSelected(checked === true)}
+        aria-label="Select all"
+      />
+    ),
+    cell: ({ row }) => (
+      <Checkbox
+        checked={row.getIsSelected()}
+        onCheckedChange={(checked) => row.toggleSelected(checked === true)}
+        aria-label="Select row"
+        onClick={(e) => e.stopPropagation()}
+      />
+    ),
+  },
+  {
     accessorKey: "title",
     enableSorting: true,
     header: ({ column }) => (
@@ -180,6 +139,23 @@ const columns: ColumnDef<Task>[] = [
     ),
     cell: ({ getValue }) => (
       <div className="text-xs font-medium">{getValue() as string}</div>
+    ),
+  },
+  {
+    id: "project",
+    accessorFn: (row) => row.folder_name ?? row.folder_key,
+    enableSorting: true,
+    header: ({ column }) => (
+      <DataTableColumnHeader
+        column={column}
+        title="Project"
+        icon={<FolderKanban className={iconProps} strokeWidth={1.5} />}
+      />
+    ),
+    cell: ({ row }) => (
+      <span className="text-xs text-muted-foreground">
+        {row.original.folder_name ?? row.original.folder_key}
+      </span>
     ),
   },
   {
@@ -260,34 +236,33 @@ const columns: ColumnDef<Task>[] = [
   },
 ];
 
-export default function TaskTable({ project, onBack }: Props) {
+export default function TaskTable({ project, allProjects, onBack }: Props) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+
+  const [sheetTask, setSheetTask] = useState<Task | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [singleDeleteOpen, setSingleDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   // New task dialog + form state
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
+  const [newTaskFolderKey, setNewTaskFolderKey] = useState("");
   const [newKind, setNewKind] = useState("task");
   const [newPriority, setNewPriority] = useState("medium");
   const [creating, setCreating] = useState(false);
 
+  const canAddTask = project != null || allProjects.length > 0;
+
   const [taskSearch, setTaskSearch] = useState("");
-
-  // Edit dialog
-  const [editTask, setEditTask] = useState<Task | null>(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editStatus, setEditStatus] = useState("");
-  const [editKind, setEditKind] = useState("");
-  const [editPriority, setEditPriority] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  // Delete confirm
-  const [deleteTask, setDeleteTask] = useState<Task | null>(null);
-  const [deleting, setDeleting] = useState(false);
 
   // Saved views (scoped to tasks context)
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
@@ -343,12 +318,14 @@ export default function TaskTable({ project, onBack }: Props) {
   const loadTasks = useCallback(async () => {
     setLoading(true);
     try {
-      const rows = await invoke<Task[]>("get_tasks", { folderKey: project.folder_key });
+      const rows = await invoke<Task[]>("get_tasks", {
+        folderKey: project?.folder_key ?? null,
+      });
       setTasks(rows);
     } finally {
       setLoading(false);
     }
-  }, [project.folder_key]);
+  }, [project?.folder_key]);
 
   useEffect(() => {
     loadTasks();
@@ -356,74 +333,24 @@ export default function TaskTable({ project, onBack }: Props) {
 
   const handleCreate = async () => {
     if (!newTitle.trim()) return;
+    const folderKey = project?.folder_key ?? newTaskFolderKey;
+    if (!folderKey) return;
     setCreating(true);
     try {
       await invoke<Task>("create_task", {
-        folderKey: project.folder_key,
+        folderKey,
         title: newTitle.trim(),
         kind: newKind,
         description: null,
         priority: newPriority,
       });
       setNewTitle("");
+      setNewTaskFolderKey("");
       setNewTaskOpen(false);
       await loadTasks();
     } finally {
       setCreating(false);
     }
-  };
-
-  const handleQuickToggle = async (task: Task) => {
-    const newStatus = task.status === "done" ? "open" : "done";
-    await invoke<Task>("update_task", {
-      id: task.id,
-      title: null,
-      description: null,
-      status: newStatus,
-      kind: null,
-      priority: null,
-    });
-    await loadTasks();
-  };
-
-  const handleEditSave = async () => {
-    if (!editTask) return;
-    setSaving(true);
-    try {
-      await invoke<Task>("update_task", {
-        id: editTask.id,
-        title: editTitle.trim() || null,
-        description: editDescription.trim() || null,
-        status: editStatus || null,
-        kind: editKind || null,
-        priority: editPriority || null,
-      });
-      setEditTask(null);
-      await loadTasks();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (!deleteTask) return;
-    setDeleting(true);
-    try {
-      await invoke("delete_task", { id: deleteTask.id });
-      setDeleteTask(null);
-      await loadTasks();
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  const openEdit = (task: Task) => {
-    setEditTask(task);
-    setEditTitle(task.title);
-    setEditDescription(task.description ?? "");
-    setEditStatus(task.status);
-    setEditKind(task.kind);
-    setEditPriority(task.priority ?? "medium");
   };
 
   const filteredTasks = useMemo(() => {
@@ -435,7 +362,9 @@ export default function TaskTable({ project, onBack }: Props) {
         (t.description ?? "").toLowerCase().includes(q) ||
         t.kind.toLowerCase().includes(q) ||
         t.status.toLowerCase().includes(q) ||
-        (t.priority ?? "").toLowerCase().includes(q),
+        (t.priority ?? "").toLowerCase().includes(q) ||
+        (t.folder_name ?? "").toLowerCase().includes(q) ||
+        t.folder_key.toLowerCase().includes(q),
     );
   }, [tasks, taskSearch]);
 
@@ -443,16 +372,66 @@ export default function TaskTable({ project, onBack }: Props) {
     data: filteredTasks,
     columns,
     getRowId: (row) => String(row.id),
-    state: { sorting, columnFilters, columnVisibility },
+    state: { sorting, columnFilters, columnVisibility, rowSelection },
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     onColumnVisibilityChange: setColumnVisibility,
+    onRowSelectionChange: setRowSelection,
     getCoreRowModel: coreRowModel,
     getFilteredRowModel: filteredRowModel,
     getSortedRowModel: sortedRowModel,
     getFacetedRowModel: facetedRowModel,
     getFacetedUniqueValues: facetedUniqueValues,
+    enableRowSelection: true,
   });
+
+  const selectedKeys = Object.keys(rowSelection).filter((k) => rowSelection[k]);
+  const selectedCount = selectedKeys.length;
+  const selectedOneTask =
+    selectedCount === 1
+      ? filteredTasks.find((t) => String(t.id) === selectedKeys[0]) ?? null
+      : null;
+
+  const openTaskSheet = (task: Task) => {
+    setSheetTask(task);
+    setSheetOpen(true);
+  };
+
+  const handleEditSelection = () => {
+    if (!selectedOneTask) return;
+    openTaskSheet(selectedOneTask);
+  };
+
+  const deleteTasksByIds = async (ids: number[]) => {
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await Promise.all(ids.map((id) => invoke("delete_task", { id })));
+      setRowSelection({});
+      setBulkDeleteOpen(false);
+      setSingleDeleteOpen(false);
+      if (sheetTask && ids.includes(sheetTask.id)) {
+        setSheetOpen(false);
+        setSheetTask(null);
+      }
+      await loadTasks();
+    } catch (e) {
+      setDeleteError(String(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedCount === 0) return;
+    const ids = selectedKeys.map((k) => Number(k));
+    await deleteTasksByIds(ids);
+  };
+
+  const handleSingleDeleteFromBar = async () => {
+    if (!selectedOneTask) return;
+    await deleteTasksByIds([selectedOneTask.id]);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -466,7 +445,13 @@ export default function TaskTable({ project, onBack }: Props) {
         <Button
           size="icon"
           className="h-7 w-7 shrink-0"
-          onClick={() => setNewTaskOpen(true)}
+          disabled={!canAddTask}
+          onClick={() => {
+            setNewTaskOpen(true);
+            if (!project && allProjects[0]) {
+              setNewTaskFolderKey(allProjects[0].folder_key);
+            }
+          }}
         >
           <Plus />
         </Button>
@@ -495,7 +480,6 @@ export default function TaskTable({ project, onBack }: Props) {
             onViewsChange={loadViews}
           />
           <DataTableViewOptions table={table} />
-          <ModeToggle align="end" />
         </div>
       </div>
 
@@ -511,50 +495,93 @@ export default function TaskTable({ project, onBack }: Props) {
         onViewsChange={loadViews}
       />
 
+      {selectedCount > 0 && (
+        <div className="flex shrink-0 items-center gap-2 py-1.5">
+          <span className="text-xs text-muted-foreground">{selectedCount} selected</span>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="h-6 gap-1.5 text-xs"
+            onClick={handleEditSelection}
+            disabled={!selectedOneTask}
+          >
+            <Pencil className="h-3 w-3" />
+            Edit
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            className="h-6 gap-1.5 text-xs"
+            onClick={() => {
+              setDeleteError("");
+              if (selectedCount === 1 && selectedOneTask) {
+                setSingleDeleteOpen(true);
+              } else {
+                setBulkDeleteOpen(true);
+              }
+            }}
+            disabled={deleting}
+          >
+            <Trash2 className="h-3 w-3" />
+            {deleting ? "Deleting…" : selectedCount === 1 ? "Delete task" : "Delete tasks"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 text-xs text-muted-foreground"
+            onClick={() => table.resetRowSelection()}
+          >
+            Clear
+          </Button>
+        </div>
+      )}
+
       {/* Table */}
       {loading && tasks.length === 0 ? (
-        <div className="mt-2 flex-1 rounded-md border border-border">
+        <div className="mt-1 flex-1 rounded-md border border-border">
           <div className="flex items-center gap-3 border-b border-border px-3 py-2.5">
-            <Skeleton className="h-3.5 w-[200px]" />
-            <Skeleton className="h-3.5 w-[80px]" />
+            <Skeleton className="h-4 w-4 rounded-[4px]" />
+            <Skeleton className="h-3.5 w-[180px]" />
+            <Skeleton className="h-3.5 w-[100px]" />
             <Skeleton className="h-3.5 w-[80px]" />
             <Skeleton className="h-3.5 w-[80px]" />
           </div>
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="flex items-center gap-3 border-b border-border/50 px-3 py-2.5">
-              <Skeleton className="h-3.5 w-[200px]" />
-              <Skeleton className="h-3.5 w-[80px]" />
+              <Skeleton className="h-4 w-4 rounded-[4px]" />
+              <Skeleton className="h-3.5 w-[180px]" />
+              <Skeleton className="h-3.5 w-[100px]" />
               <Skeleton className="h-3.5 w-[80px]" />
               <Skeleton className="h-3.5 w-[80px]" />
             </div>
           ))}
         </div>
       ) : tasks.length === 0 ? (
-        <div className="mt-2 flex flex-1 items-center justify-center text-sm text-muted-foreground">
+        <div className="mt-1 flex flex-1 items-center justify-center text-sm text-muted-foreground">
           No tasks yet. Use the plus button to add one.
         </div>
       ) : filteredTasks.length === 0 ? (
-        <div className="mt-2 flex flex-1 items-center justify-center text-sm text-muted-foreground">
+        <div className="mt-1 flex flex-1 items-center justify-center text-sm text-muted-foreground">
           No tasks match your search.
         </div>
       ) : (
-        <ScrollArea className="mt-2 min-h-0 flex-1 rounded-md border border-border">
+        <div className="mt-1 min-h-0 flex-1 overflow-auto rounded-md border border-border">
           <Table>
             <TableHeader className="sticky top-0 z-10 bg-background">
               {table.getHeaderGroups().map((hg) => (
                 <TableRow key={hg.id} className="hover:bg-transparent">
-                  {/* Quick-toggle column header */}
-                  <TableHead className="w-10 pl-3" />
                   {hg.headers.map((header) => (
                     <TableHead
                       key={header.id}
                       className={cn(
-                        header.column.id === "title"       && "w-[240px] pl-2",
-                        header.column.id === "kind"        && "w-[100px]",
-                        header.column.id === "status"      && "w-[120px]",
-                        header.column.id === "priority"    && "w-[100px]",
+                        header.column.id === "select" && "w-10 pl-3",
+                        header.column.id === "title" && "w-[240px] pl-2",
+                        header.column.id === "project" && "w-[160px]",
+                        header.column.id === "kind" && "w-[100px]",
+                        header.column.id === "status" && "w-[120px]",
+                        header.column.id === "priority" && "w-[100px]",
                         header.column.id === "description" && "w-[300px]",
-                        header.column.id === "created_at"  && "w-[100px]",
+                        header.column.id === "created_at" && "w-[100px]",
                       )}
                     >
                       {header.isPlaceholder
@@ -562,66 +589,39 @@ export default function TaskTable({ project, onBack }: Props) {
                         : flexRender(header.column.columnDef.header, header.getContext())}
                     </TableHead>
                   ))}
-                  {/* Actions column header */}
-                  <TableHead className="w-16 pr-3" />
                 </TableRow>
               ))}
             </TableHeader>
             <TableBody>
               {table.getRowModel().rows.map((row) => {
                 const task = row.original;
-                const isDone = task.status === "done" || task.status === "closed";
                 return (
                   <TableRow
                     key={row.id}
-                    className={cn("cursor-pointer", isDone && "opacity-50")}
-                    onClick={() => openEdit(task)}
+                    data-state={row.getIsSelected() ? "selected" : undefined}
+                    className={cn(
+                      "cursor-pointer",
+                      sheetTask?.id === task.id && sheetOpen && "bg-accent/20",
+                    )}
+                    onClick={() => openTaskSheet(task)}
                   >
-                    <TableCell className="pl-3">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleQuickToggle(task);
-                        }}
-                        className={cn(
-                          "flex h-4 w-4 items-center justify-center rounded-full border transition-colors",
-                          isDone
-                            ? "border-green-500 bg-green-500 text-white"
-                            : "border-muted-foreground/40 hover:border-green-500"
-                        )}
-                      >
-                        {isDone && <Check className="h-2.5 w-2.5" />}
-                      </button>
-                    </TableCell>
                     {row.getVisibleCells().map((cell) => (
                       <TableCell
                         key={cell.id}
                         className={cn(
+                          cell.column.id === "select" && "pl-3",
                           cell.column.id === "title" && "pl-2",
                         )}
                       >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </TableCell>
                     ))}
-                    <TableCell className="pr-3">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteTask(task);
-                        }}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </TableCell>
                   </TableRow>
                 );
               })}
             </TableBody>
           </Table>
-        </ScrollArea>
+        </div>
       )}
 
       {/* New task dialog */}
@@ -631,6 +631,7 @@ export default function TaskTable({ project, onBack }: Props) {
           setNewTaskOpen(open);
           if (!open) {
             setNewTitle("");
+            setNewTaskFolderKey("");
             setNewKind("task");
             setNewPriority("medium");
           }
@@ -640,10 +641,32 @@ export default function TaskTable({ project, onBack }: Props) {
           <DialogHeader>
             <DialogTitle>New task</DialogTitle>
             <DialogDescription className="text-xs">
-              Add a task for {project.folder_name}.
+              {project
+                ? `Add a task for ${project.folder_name}.`
+                : "Choose a project and add a task."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-1">
+            {!project && (
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Project</label>
+                <Select
+                  value={newTaskFolderKey}
+                  onValueChange={(v) => v && setNewTaskFolderKey(v)}
+                >
+                  <SelectTrigger className="mt-1 h-8 text-xs">
+                    <SelectValue placeholder="Select project…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allProjects.map((p) => (
+                      <SelectItem key={p.folder_key} value={p.folder_key}>
+                        {p.folder_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
               <label className="text-xs font-medium text-muted-foreground">Title</label>
               <Input
@@ -694,6 +717,7 @@ export default function TaskTable({ project, onBack }: Props) {
               size="sm"
               onClick={() => {
                 setNewTitle("");
+                setNewTaskFolderKey("");
                 setNewKind("task");
                 setNewPriority("medium");
                 setNewTaskOpen(false);
@@ -704,7 +728,11 @@ export default function TaskTable({ project, onBack }: Props) {
             <Button
               size="sm"
               onClick={handleCreate}
-              disabled={!newTitle.trim() || creating}
+              disabled={
+                !newTitle.trim() ||
+                creating ||
+                (!project && !newTaskFolderKey)
+              }
             >
               {creating ? "Adding…" : "Add task"}
             </Button>
@@ -712,101 +740,63 @@ export default function TaskTable({ project, onBack }: Props) {
         </DialogContent>
       </Dialog>
 
-      {/* Edit Dialog */}
-      <Dialog open={!!editTask} onOpenChange={(open) => !open && setEditTask(null)}>
-        <DialogContent className="sm:max-w-[480px]">
+      <TaskDetail
+        task={sheetTask}
+        open={sheetOpen}
+        onOpenChange={(open) => {
+          setSheetOpen(open);
+          if (!open) setSheetTask(null);
+        }}
+        onTaskSaved={async (updated) => {
+          setSheetTask(updated);
+          await loadTasks();
+        }}
+        onTaskDeleted={async () => {
+          setRowSelection({});
+          await loadTasks();
+        }}
+      />
+
+      <Dialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
-            <DialogTitle>Edit Task</DialogTitle>
+            <DialogTitle>Delete tasks</DialogTitle>
+            <DialogDescription className="text-xs">
+              Permanently delete {selectedCount} selected tasks? This cannot be undone.
+            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 py-2">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Title</label>
-              <Input
-                value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                className="mt-1 h-8 text-xs"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Description</label>
-              <Input
-                value={editDescription}
-                onChange={(e) => setEditDescription(e.target.value)}
-                placeholder="Optional description..."
-                className="mt-1 h-8 text-xs"
-              />
-            </div>
-            <div className="flex gap-3">
-              <div className="flex-1">
-                <label className="text-xs font-medium text-muted-foreground">Status</label>
-                <Select value={editStatus} onValueChange={(v) => v && setEditStatus(v)}>
-                  <SelectTrigger className="mt-1 h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="open">Open</SelectItem>
-                    <SelectItem value="in-progress">In Progress</SelectItem>
-                    <SelectItem value="done">Done</SelectItem>
-                    <SelectItem value="closed">Closed</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex-1">
-                <label className="text-xs font-medium text-muted-foreground">Kind</label>
-                <Select value={editKind} onValueChange={(v) => v && setEditKind(v)}>
-                  <SelectTrigger className="mt-1 h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="task">Task</SelectItem>
-                    <SelectItem value="issue">Issue</SelectItem>
-                    <SelectItem value="request">Request</SelectItem>
-                    <SelectItem value="next-step">Next Step</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex-1">
-                <label className="text-xs font-medium text-muted-foreground">Priority</label>
-                <Select value={editPriority} onValueChange={(v) => v && setEditPriority(v)}>
-                  <SelectTrigger className="mt-1 h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="urgent">Urgent</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="low">Low</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </div>
+          {deleteError && <p className="text-xs text-destructive">{deleteError}</p>}
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setEditTask(null)}>
+            <Button variant="outline" size="sm" onClick={() => setBulkDeleteOpen(false)}>
               Cancel
             </Button>
-            <Button size="sm" onClick={handleEditSave} disabled={saving}>
-              {saving ? "Saving..." : "Save"}
+            <Button variant="destructive" size="sm" onClick={handleBulkDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete tasks"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirm Dialog */}
-      <Dialog open={!!deleteTask} onOpenChange={(open) => !open && setDeleteTask(null)}>
+      <Dialog open={singleDeleteOpen} onOpenChange={setSingleDeleteOpen}>
         <DialogContent className="sm:max-w-[400px]">
           <DialogHeader>
-            <DialogTitle>Delete Task</DialogTitle>
+            <DialogTitle>Delete task</DialogTitle>
             <DialogDescription className="text-xs">
-              Are you sure you want to delete "{deleteTask?.title}"? This cannot be undone.
+              Permanently delete &quot;{selectedOneTask?.title}&quot;? This cannot be undone.
             </DialogDescription>
           </DialogHeader>
+          {deleteError && <p className="text-xs text-destructive">{deleteError}</p>}
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setDeleteTask(null)}>
+            <Button variant="outline" size="sm" onClick={() => setSingleDeleteOpen(false)}>
               Cancel
             </Button>
-            <Button variant="destructive" size="sm" onClick={handleDelete} disabled={deleting}>
-              {deleting ? "Deleting..." : "Delete"}
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleSingleDeleteFromBar}
+              disabled={deleting || !selectedOneTask}
+            >
+              {deleting ? "Deleting…" : "Delete task"}
             </Button>
           </DialogFooter>
         </DialogContent>

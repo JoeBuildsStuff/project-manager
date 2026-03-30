@@ -29,6 +29,8 @@ export type StageFilter = string;
 export interface Task {
   id: number;
   folder_key: string;
+  /** Project display name when returned from list/detail queries */
+  folder_name?: string | null;
   kind: string;
   title: string;
   description: string | null;
@@ -56,6 +58,19 @@ export interface SavedView {
   sorting: string;   // JSON-serialized SortingState
   filters: string;   // JSON-serialized ColumnFiltersState
   visibility: string; // JSON-serialized VisibilityState
+}
+
+export interface NotesDocumentSummary {
+  id: string;
+  title: string;
+  icon_name: string;
+  is_favorite: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotesDocument extends NotesDocumentSummary {
+  content: string;
 }
 
 export interface DeleteGuardrails {

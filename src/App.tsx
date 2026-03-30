@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import type { Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, TaskCount } from "./types";
+import type { NotesDocument, NotesDocumentSummary, Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, TaskCount } from "./types";
 import AppSidebar from "./components/Sidebar";
 import ProjectTable from "./components/ProjectTable";
 import ProjectDetail from "./components/ProjectDetail";
@@ -31,6 +31,8 @@ interface DiffStat {
 
 type View = "projects" | "settings" | "tasks" | "notes";
 
+const NOTES_SELECTED_KEY = "pm-selected-note-id";
+
 export default function App() {
   const [pendingJumpTarget, setPendingJumpTarget] = useState<"project-table" | "task-table" | null>(null);
   const [workspaceReady, setWorkspaceReady] = useState<boolean | null>(null);
@@ -56,6 +58,16 @@ export default function App() {
   // Task view state
   const [taskProject, setTaskProject] = useState<Project | null>(null);
   const [taskCounts, setTaskCounts] = useState<Map<string, TaskCount>>(new Map());
+
+  const [notesList, setNotesList] = useState<NotesDocumentSummary[]>([]);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(NOTES_SELECTED_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const [notesListLoading, setNotesListLoading] = useState(false);
 
   // Check workspace config on mount
   useEffect(() => {
@@ -102,6 +114,44 @@ export default function App() {
       // silently fail
     }
   }, []);
+
+  const refreshNotesList = useCallback(
+    async (options?: { selectId?: string }) => {
+      if (!workspaceReady) return;
+      setNotesListLoading(true);
+      try {
+        const list = await invoke<NotesDocumentSummary[]>("list_notes_documents");
+        setNotesList(list);
+        setSelectedNoteId((prev) => {
+          const force = options?.selectId;
+          if (force !== undefined && list.some((n) => n.id === force)) {
+            return force;
+          }
+          if (list.length === 0) return null;
+          if (prev && list.some((n) => n.id === prev)) return prev;
+          return list[0]!.id;
+        });
+      } catch {
+        setNotesList([]);
+      } finally {
+        setNotesListLoading(false);
+      }
+    },
+    [workspaceReady]
+  );
+
+  const handleSelectNoteId = useCallback((id: string) => {
+    setSelectedNoteId(id);
+  }, []);
+
+  const handleCreateNote = useCallback(async () => {
+    try {
+      const doc = await invoke<NotesDocument>("create_notes_document");
+      await refreshNotesList({ selectId: doc.id });
+    } catch {
+      // ignore
+    }
+  }, [refreshNotesList]);
 
   // Lazy-load diff stats after projects render
   const loadDiffStats = useCallback(async () => {
@@ -153,6 +203,24 @@ export default function App() {
       loadTaskCounts();
     }
   }, [workspaceReady]);
+
+  useEffect(() => {
+    try {
+      if (selectedNoteId) {
+        localStorage.setItem(NOTES_SELECTED_KEY, selectedNoteId);
+      } else {
+        localStorage.removeItem(NOTES_SELECTED_KEY);
+      }
+    } catch {
+      // ignore
+    }
+  }, [selectedNoteId]);
+
+  useEffect(() => {
+    if (view === "notes" && workspaceReady) {
+      void refreshNotesList();
+    }
+  }, [view, workspaceReady, refreshNotesList]);
 
   // Client-side filtering — instant, no IPC round-trip
   const projects = useMemo(() => {
@@ -269,10 +337,9 @@ export default function App() {
   };
 
   const handleJumpToTasks = () => {
-    const projectForTasks = selected ?? taskProject;
-    if (!projectForTasks) return;
-
-    setTaskProject(projectForTasks);
+    const scope =
+      sheetOpen && selected ? selected : taskProject;
+    setTaskProject(scope ?? null);
     setView("tasks");
     setSheetOpen(false);
     setPendingJumpTarget("task-table");
@@ -303,6 +370,13 @@ export default function App() {
     const config = await invoke<WorkspaceConfig>("get_workspace_config");
     setWorkspaceReady(config.is_configured);
     setWorkspacePath(config.workspace_path);
+    setNotesList([]);
+    setSelectedNoteId(null);
+    try {
+      localStorage.removeItem(NOTES_SELECTED_KEY);
+    } catch {
+      // ignore
+    }
     setView("projects");
   };
 
@@ -342,9 +416,13 @@ export default function App() {
           onJumpToProjects={handleJumpToProjects}
           onJumpToTasks={handleJumpToTasks}
           onJumpToNotes={handleJumpToNotes}
-          canJumpToTasks={Boolean(selected ?? taskProject)}
           activeView={view}
           taskProject={taskProject}
+          notesList={notesList}
+          selectedNoteId={selectedNoteId}
+          onSelectNoteId={handleSelectNoteId}
+          onCreateNote={handleCreateNote}
+          notesListLoading={notesListLoading}
         />
 
         <SidebarInset className="min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">
@@ -354,15 +432,19 @@ export default function App() {
               onWorkspaceChanged={handleWorkspaceChanged}
               onBack={() => setView("projects")}
             />
-          ) : view === "tasks" && taskProject ? (
+          ) : view === "tasks" ? (
             <div id="task-table" tabIndex={-1} className="m-2 min-h-0 flex-1 outline-none">
               <TaskTable
                 project={taskProject}
+                allProjects={allProjects}
                 onBack={handleBackFromTasks}
               />
             </div>
           ) : view === "notes" ? (
-            <Notes />
+            <Notes
+              selectedNoteId={selectedNoteId}
+              onRefreshNotesList={refreshNotesList}
+            />
           ) : (
             <div id="project-table" tabIndex={-1} className="m-2 min-h-0 flex-1 outline-none">
               <ProjectTable
