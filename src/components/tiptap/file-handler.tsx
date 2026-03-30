@@ -8,6 +8,7 @@ import { uploadFile } from './supabase-file-manager'
 interface FileHandlerConfigProps {
   onFileDrop?: (files: File[]) => void
   fileUploadConfig?: {
+    documentId?: string
     supabaseBucket?: string
     pathPrefix?: string
     maxFileSize?: number
@@ -16,27 +17,6 @@ interface FileHandlerConfigProps {
 }
 
 const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        resolve(reader.result)
-        return
-      }
-
-      reject(new Error('Failed to convert image to a data URL'))
-    }
-
-    reader.onerror = () => {
-      reject(reader.error ?? new Error('Failed to read image file'))
-    }
-
-    reader.readAsDataURL(file)
-  })
-}
 
 export const createFileHandlerConfig = ({ onFileDrop, fileUploadConfig }: FileHandlerConfigProps = {}) => {
   const handleFiles = async (currentEditor: Editor, files: File[], pos?: number) => {
@@ -56,7 +36,19 @@ export const createFileHandlerConfig = ({ onFileDrop, fileUploadConfig }: FileHa
             continue
           }
 
-          const dataUrl = await readFileAsDataUrl(file)
+          const result = await uploadFile(file, {
+            documentId: fileUploadConfig?.documentId,
+            bucket: fileUploadConfig?.supabaseBucket || 'tiptap-bucket-files',
+            pathPrefix: fileUploadConfig?.pathPrefix || 'notes',
+            maxFileSize: fileUploadConfig?.maxFileSize,
+            allowedMimeTypes: fileUploadConfig?.allowedMimeTypes,
+          })
+
+          if (!result.success || !result.filePath) {
+            console.error('Image upload failed:', result.error)
+            continue
+          }
+
           const insertPos = pos ?? currentEditor.state.selection.anchor
 
           currentEditor
@@ -64,7 +56,7 @@ export const createFileHandlerConfig = ({ onFileDrop, fileUploadConfig }: FileHa
             .insertContentAt(insertPos, {
               type: 'image',
               attrs: {
-                src: dataUrl,
+                src: result.filePath,
               },
             })
             .focus()
@@ -75,6 +67,7 @@ export const createFileHandlerConfig = ({ onFileDrop, fileUploadConfig }: FileHa
 
         // Upload all files to Supabase using unified upload function
         const result = await uploadFile(file, {
+          documentId: fileUploadConfig?.documentId,
           bucket: fileUploadConfig?.supabaseBucket || 'tiptap-bucket-files',
           pathPrefix: fileUploadConfig?.pathPrefix || 'notes',
           maxFileSize: fileUploadConfig?.maxFileSize,

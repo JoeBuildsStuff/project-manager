@@ -174,8 +174,9 @@ export default function Notes() {
                 onChange={handleContentChange}
                 showFixedMenu
                 showBubbleMenu
-                enableFileNodes={false}
+                enableFileNodes
                 commentsDocumentId={document.id}
+                attachmentsDocumentId={document.id}
               />
             </EditorErrorBoundary>
           ) : (

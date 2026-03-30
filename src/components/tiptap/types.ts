@@ -12,6 +12,8 @@ export type CommentSelectionPayload = {
 
 // Types for configurable Tiptap component
 export interface TiptapFileUploadConfig {
+  /** Note document id used for Tauri-backed attachment storage */
+  documentId?: string
   /** Upload function that returns a promise with the uploaded file path */
   uploadFn?: (file: File) => Promise<string>
   /** Maximum file size in bytes (default: 10MB) */
@@ -43,6 +45,8 @@ export interface TiptapProps {
   onShowCommentsChange?: (show: boolean) => void
   /** Document id used by built-in comments CRUD */
   commentsDocumentId?: string
+  /** Document id used by Tauri-backed attachment storage */
+  attachmentsDocumentId?: string
 }
 
 export interface FileUploadResult {

@@ -13,6 +13,7 @@ import {
 import { FileNodeAttributes } from './file-node'
 import { X, Download } from 'lucide-react'
 import Spinner from '@/components/ui/spinner'
+import { resolveAttachmentUrl } from './note-attachments'
 
 export const FileNodeView = ({ node, updateAttributes, deleteNode, selected }: ReactNodeViewProps) => {
   const attrs = node.attrs as FileNodeAttributes
@@ -31,30 +32,9 @@ export const FileNodeView = ({ node, updateAttributes, deleteNode, selected }: R
       try {
         setIsLoading(true)
         setError(null)
-        
-        // If it's already a full URL, use it directly
-        if (attrs.src.startsWith('http')) {
-          setDownloadUrl(attrs.src)
-          setIsLoading(false)
-          return
-        }
-        
-        // For file paths, use our API to get a signed URL
-        const apiUrl = `/api/files/serve?path=${encodeURIComponent(attrs.src)}`
-        
-        const response = await fetch(apiUrl)
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}))
-          throw new Error(`Failed to fetch file: ${response.status} - ${errorData.error || 'Unknown error'}`)
-        }
-        
-        const data = await response.json()
-        if (data.fileUrl) {
-          setDownloadUrl(data.fileUrl)
-        } else {
-          throw new Error('Invalid response from file API')
-        }
-        
+
+        const resolvedUrl = await resolveAttachmentUrl(attrs.src)
+        setDownloadUrl(resolvedUrl)
         setIsLoading(false)
       } catch (err) {
         console.error('Error fetching file URL:', err)

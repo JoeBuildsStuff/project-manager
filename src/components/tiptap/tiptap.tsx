@@ -17,7 +17,6 @@ import { useEffect, useMemo, useState } from "react";
 import { TiptapProps } from "./types";
 import { Image } from "@tiptap/extension-image";
 import { CustomImageView } from "./custom-image-view";
-import { deleteFile } from "./supabase-file-manager";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
@@ -61,6 +60,7 @@ const Tiptap = ({
   showComments,
   onShowCommentsChange,
   commentsDocumentId,
+  attachmentsDocumentId,
 }: TiptapProps) => {
   const commentsEnabled = Boolean(commentsDocumentId);
   const [internalShowComments, setInternalShowComments] = useState(false);
@@ -153,12 +153,17 @@ const Tiptap = ({
               onFileDrop,
               fileUploadConfig: fileUploadConfig
                 ? {
+                    documentId: fileUploadConfig.documentId ?? attachmentsDocumentId,
                     supabaseBucket: fileUploadConfig.supabaseBucket,
                     pathPrefix: fileUploadConfig.pathPrefix,
                     maxFileSize: fileUploadConfig.maxFileSize,
                     allowedMimeTypes: fileUploadConfig.allowedMimeTypes,
                   }
-                : undefined,
+                : attachmentsDocumentId
+                  ? {
+                      documentId: attachmentsDocumentId,
+                    }
+                  : undefined,
             }),
           ]
         : []),
@@ -206,26 +211,6 @@ const Tiptap = ({
     ],
     content: content || "",
     immediatelyRender: false,
-    onDelete(params: {
-      type: string;
-      node?: { type: { name: string }; attrs?: { src?: string } };
-      [key: string]: unknown;
-    }) {
-      const { type, node } = params;
-      if (type === "node" && node?.attrs?.src) {
-        const src = node.attrs.src;
-        if (
-          typeof src === "string" &&
-          !src.startsWith("http") &&
-          !src.startsWith("data:") &&
-          !src.startsWith("blob:")
-        ) {
-          deleteFile(src).catch((error: unknown) => {
-            console.error("Failed to cleanup deleted file:", error);
-          });
-        }
-      }
-    },
     onUpdate: ({ editor }) => {
       if (commentsEnabled) {
         queueAnchorSync();

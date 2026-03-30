@@ -1,11 +1,13 @@
 use crate::config::{self, AppConfig};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri_plugin_updater::UpdaterExt;
 
 // ---------------------------------------------------------------------------
@@ -19,9 +21,10 @@ pub struct WorkspaceState {
 impl WorkspaceState {
     pub fn new() -> Self {
         let config = config::read_config();
-        let path = config.workspace_path.map(PathBuf::from).filter(|p| {
-            p.join("project-metadata.sqlite").exists()
-        });
+        let path = config
+            .workspace_path
+            .map(PathBuf::from)
+            .filter(|p| p.join("project-metadata.sqlite").exists());
         Self {
             path: RwLock::new(path),
         }
@@ -38,7 +41,9 @@ pub struct TokenCache {
 
 impl TokenCache {
     pub fn new() -> Self {
-        Self { cache: Mutex::new(std::collections::HashMap::new()) }
+        Self {
+            cache: Mutex::new(std::collections::HashMap::new()),
+        }
     }
 }
 
@@ -52,7 +57,9 @@ pub struct UpdateState {
 
 impl UpdateState {
     pub fn new() -> Self {
-        Self { pending: Mutex::new(None) }
+        Self {
+            pending: Mutex::new(None),
+        }
     }
 }
 
@@ -171,6 +178,17 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
             updated_at TEXT DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS note_attachments (
+            id           TEXT PRIMARY KEY,
+            document_id  TEXT NOT NULL REFERENCES notes_documents(id) ON DELETE CASCADE,
+            rel_path     TEXT NOT NULL,
+            mime         TEXT NOT NULL,
+            filename     TEXT,
+            size_bytes   INTEGER NOT NULL,
+            sha256       TEXT,
+            created_at   TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS note_comment_threads (
             id            TEXT PRIMARY KEY,
             document_id   TEXT NOT NULL REFERENCES notes_documents(id) ON DELETE CASCADE,
@@ -215,7 +233,9 @@ pub struct WorkspaceConfig {
 }
 
 #[tauri::command]
-pub fn get_workspace_config(state: tauri::State<'_, WorkspaceState>) -> Result<WorkspaceConfig, String> {
+pub fn get_workspace_config(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<WorkspaceConfig, String> {
     let path = state.path.read().map_err(|e| e.to_string())?;
     Ok(WorkspaceConfig {
         workspace_path: path.as_ref().map(|p| p.to_string_lossy().to_string()),
@@ -313,6 +333,17 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
             updated_at TEXT DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS note_attachments (
+            id           TEXT PRIMARY KEY,
+            document_id  TEXT NOT NULL REFERENCES notes_documents(id) ON DELETE CASCADE,
+            rel_path     TEXT NOT NULL,
+            mime         TEXT NOT NULL,
+            filename     TEXT,
+            size_bytes   INTEGER NOT NULL,
+            sha256       TEXT,
+            created_at   TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS note_comment_threads (
             id            TEXT PRIMARY KEY,
             document_id   TEXT NOT NULL REFERENCES notes_documents(id) ON DELETE CASCADE,
@@ -340,8 +371,14 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     // Idempotent migrations – silently ignored if column already exists
-    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN lines_added INTEGER", []);
-    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN lines_removed INTEGER", []);
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN lines_added INTEGER",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN lines_removed INTEGER",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN stage TEXT", []);
 
     conn.execute_batch(
@@ -400,6 +437,27 @@ pub struct NotesDocument {
     pub content: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteAttachment {
+    pub id: String,
+    pub document_id: String,
+    pub rel_path: String,
+    pub mime: String,
+    pub filename: Option<String>,
+    pub size_bytes: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteAttachmentPayload {
+    pub id: String,
+    pub mime: String,
+    pub filename: Option<String>,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -483,8 +541,7 @@ fn strip_rich_text(content: &str) -> String {
         }
     }
 
-    text
-        .replace("&nbsp;", " ")
+    text.replace("&nbsp;", " ")
         .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -505,6 +562,156 @@ fn ensure_notes_document_exists(conn: &Connection, document_id: &str) -> Result<
 
     if exists == 0 {
         return Err("Document not found".into());
+    }
+
+    Ok(())
+}
+
+fn note_attachments_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".project-manager").join("notes")
+}
+
+fn generate_attachment_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+
+    format!("att-{nanos:x}")
+}
+
+fn sanitized_extension(filename: Option<&str>, mime: &str) -> Option<String> {
+    let from_filename = filename
+        .and_then(|value| Path::new(value).extension())
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.trim().to_ascii_lowercase())
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| {
+            ext.chars()
+                .filter(|ch| ch.is_ascii_alphanumeric())
+                .collect::<String>()
+        })
+        .filter(|ext| !ext.is_empty());
+
+    from_filename.or_else(|| {
+        let ext = match mime {
+            "image/jpeg" => Some("jpg"),
+            "image/png" => Some("png"),
+            "image/gif" => Some("gif"),
+            "image/webp" => Some("webp"),
+            "image/svg+xml" => Some("svg"),
+            "application/pdf" => Some("pdf"),
+            "text/plain" => Some("txt"),
+            "text/csv" => Some("csv"),
+            "application/json" => Some("json"),
+            "text/html" => Some("html"),
+            "text/css" => Some("css"),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
+                Some("docx")
+            }
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some("xlsx"),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
+                Some("pptx")
+            }
+            "application/msword" => Some("doc"),
+            "application/vnd.ms-excel" => Some("xls"),
+            "application/vnd.ms-powerpoint" => Some("ppt"),
+            "application/zip" => Some("zip"),
+            "application/x-rar-compressed" => Some("rar"),
+            "application/x-7z-compressed" => Some("7z"),
+            _ => None,
+        }?;
+
+        Some(ext.to_string())
+    })
+}
+
+fn attachment_ref_ids(content: &str) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    let needle = "attachment:";
+    let bytes = content.as_bytes();
+    let mut search_index = 0;
+
+    while let Some(relative_index) = content[search_index..].find(needle) {
+        let start = search_index + relative_index + needle.len();
+        let mut end = start;
+
+        while end < bytes.len() {
+            let ch = bytes[end] as char;
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+
+        if end > start {
+            ids.insert(content[start..end].to_string());
+        }
+
+        search_index = end;
+    }
+
+    ids
+}
+
+fn delete_note_attachment_internal(
+    conn: &Connection,
+    workspace_root: &Path,
+    attachment_id: &str,
+) -> Result<(), String> {
+    let rel_path = conn
+        .query_row(
+            "SELECT rel_path FROM note_attachments WHERE id = ?1",
+            [attachment_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    if let Some(rel_path) = rel_path {
+        let full_path = workspace_root.join(&rel_path);
+        match fs::remove_file(&full_path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+
+        conn.execute(
+            "DELETE FROM note_attachments WHERE id = ?1",
+            [attachment_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn cleanup_unreferenced_note_attachments(
+    conn: &Connection,
+    workspace_root: &Path,
+    document_id: &str,
+    content: &str,
+) -> Result<(), String> {
+    let referenced_ids = attachment_ref_ids(content);
+    let mut stmt = conn
+        .prepare("SELECT id FROM note_attachments WHERE document_id = ?1")
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([document_id], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+
+    let mut stale_ids = Vec::new();
+    for row in rows {
+        let attachment_id = row.map_err(|e| e.to_string())?;
+        if !referenced_ids.contains(&attachment_id) {
+            stale_ids.push(attachment_id);
+        }
+    }
+
+    for attachment_id in stale_ids {
+        delete_note_attachment_internal(conn, workspace_root, &attachment_id)?;
     }
 
     Ok(())
@@ -622,7 +829,9 @@ pub struct DeleteGuardrails {
 }
 
 #[tauri::command]
-pub fn get_notes_document(state: tauri::State<'_, WorkspaceState>) -> Result<NotesDocument, String> {
+pub fn get_notes_document(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NotesDocument, String> {
     const NOTES_DOCUMENT_ID: &str = "workspace";
 
     let conn = open_db(&state)?;
@@ -660,6 +869,7 @@ pub fn save_notes_document(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<NotesDocument, String> {
     let conn = open_db(&state)?;
+    let workspace_root = workspace(&state)?;
     let trimmed_title = {
         let value = title.trim();
         if value.is_empty() {
@@ -680,6 +890,8 @@ pub fn save_notes_document(
     )
     .map_err(|e| e.to_string())?;
 
+    cleanup_unreferenced_note_attachments(&conn, &workspace_root, &id, &content)?;
+
     conn.query_row(
         "SELECT id, title, content, created_at, updated_at
          FROM notes_documents
@@ -696,6 +908,116 @@ pub fn save_notes_document(
         },
     )
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_note_attachment(
+    document_id: String,
+    bytes: Vec<u8>,
+    mime: String,
+    filename: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NoteAttachment, String> {
+    let conn = open_db(&state)?;
+    ensure_notes_document_exists(&conn, &document_id)?;
+
+    let workspace_root = workspace(&state)?;
+    let attachments_dir = note_attachments_dir(&workspace_root);
+    fs::create_dir_all(&attachments_dir).map_err(|e| e.to_string())?;
+
+    let attachment_id = generate_attachment_id();
+    let extension = sanitized_extension(filename.as_deref(), &mime);
+    let stored_filename = match extension {
+        Some(ref ext) => format!("{attachment_id}.{ext}"),
+        None => attachment_id.clone(),
+    };
+    let full_path = attachments_dir.join(&stored_filename);
+    fs::write(&full_path, &bytes).map_err(|e| e.to_string())?;
+
+    let rel_path = PathBuf::from(".project-manager")
+        .join("notes")
+        .join(&stored_filename)
+        .to_string_lossy()
+        .to_string();
+    let size_bytes = i64::try_from(bytes.len()).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT INTO note_attachments (id, document_id, rel_path, mime, filename, size_bytes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            &attachment_id,
+            &document_id,
+            &rel_path,
+            &mime,
+            &filename,
+            &size_bytes
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.query_row(
+        "SELECT id, document_id, rel_path, mime, filename, size_bytes, created_at
+         FROM note_attachments
+         WHERE id = ?1",
+        [&attachment_id],
+        |row| {
+            Ok(NoteAttachment {
+                id: row.get(0)?,
+                document_id: row.get(1)?,
+                rel_path: row.get(2)?,
+                mime: row.get(3)?,
+                filename: row.get(4)?,
+                size_bytes: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_note_attachment(
+    attachment_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<NoteAttachmentPayload, String> {
+    let conn = open_db(&state)?;
+    let workspace_root = workspace(&state)?;
+
+    let attachment = conn
+        .query_row(
+            "SELECT id, rel_path, mime, filename
+             FROM note_attachments
+             WHERE id = ?1",
+            [&attachment_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    let bytes = fs::read(workspace_root.join(&attachment.1)).map_err(|e| e.to_string())?;
+
+    Ok(NoteAttachmentPayload {
+        id: attachment.0,
+        mime: attachment.2,
+        filename: attachment.3,
+        bytes,
+    })
+}
+
+#[tauri::command]
+pub fn delete_note_attachment(
+    attachment_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let conn = open_db(&state)?;
+    let workspace_root = workspace(&state)?;
+    delete_note_attachment_internal(&conn, &workspace_root, &attachment_id)
 }
 
 #[tauri::command]
@@ -1119,7 +1441,13 @@ fn git_status_short(path: &Path) -> Option<String> {
 
 fn git_diff_line_stats(path: &Path) -> (Option<i64>, Option<i64>) {
     let output = match Command::new("git")
-        .args(["-C", path.to_str().unwrap_or_default(), "diff", "--numstat", "HEAD"])
+        .args([
+            "-C",
+            path.to_str().unwrap_or_default(),
+            "diff",
+            "--numstat",
+            "HEAD",
+        ])
         .output()
     {
         Ok(output) => output,
@@ -1266,7 +1594,9 @@ pub fn get_filter_options(
     let mut stmt = conn
         .prepare("SELECT DISTINCT deploy_platform FROM project_metadata WHERE deploy_platform IS NOT NULL ORDER BY deploy_platform")
         .map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
     for row in rows {
         deploy_values.push(row.map_err(|e| e.to_string())?);
     }
@@ -1275,7 +1605,9 @@ pub fn get_filter_options(
     let mut stmt = conn
         .prepare("SELECT DISTINCT host FROM project_metadata WHERE host IS NOT NULL ORDER BY host")
         .map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
     for row in rows {
         host_values.push(row.map_err(|e| e.to_string())?);
     }
@@ -1385,7 +1717,10 @@ pub fn update_project_field(
         "status" | "category" | "stage" | "host" | "deploy_platform" | "production_url" => &field,
         _ => return Err(format!("Field '{}' is not editable", field)),
     };
-    println!("[update_project_field] folder={} field={} value={:?}", folder_key, field, value);
+    println!(
+        "[update_project_field] folder={} field={} value={:?}",
+        folder_key, field, value
+    );
     let conn = open_db(&state)?;
     let sql = format!(
         "UPDATE project_metadata SET {} = ?1 WHERE folder_key = ?2",
@@ -1684,8 +2019,17 @@ pub fn create_project(
 // ---------------------------------------------------------------------------
 
 const SKIP_FOLDERS: &[&str] = &[
-    "node_modules", "logs", "__pycache__", ".venv", "venv",
-    "target", "dist", "build", ".next", ".nuxt", ".cache",
+    "node_modules",
+    "logs",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    ".cache",
     "scripts",
 ];
 
@@ -1890,10 +2234,7 @@ fn extract_readme_description(folder_path: &Path) -> Option<String> {
             continue;
         }
         // Skip badges, images, and HTML tags
-        if trimmed.starts_with("![")
-            || trimmed.starts_with("[![")
-            || trimmed.starts_with('<')
-        {
+        if trimmed.starts_with("![") || trimmed.starts_with("[![") || trimmed.starts_with('<') {
             continue;
         }
         return Some(trimmed.chars().take(200).collect());
@@ -1957,11 +2298,8 @@ fn prune_orphaned_rows(conn: &Connection, ws: &Path) -> Result<usize, String> {
     let mut pruned = 0;
     for key in &keys {
         if !ws.join(key).is_dir() {
-            conn.execute(
-                "DELETE FROM project_metadata WHERE folder_key = ?1",
-                [key],
-            )
-            .map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM project_metadata WHERE folder_key = ?1", [key])
+                .map_err(|e| e.to_string())?;
             pruned += 1;
         }
     }
@@ -1970,9 +2308,7 @@ fn prune_orphaned_rows(conn: &Connection, ws: &Path) -> Result<usize, String> {
 }
 
 #[tauri::command]
-pub fn sync_workspace(
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<SyncResult, String> {
+pub fn sync_workspace(state: tauri::State<'_, WorkspaceState>) -> Result<SyncResult, String> {
     let ws = workspace(&state)?;
     let conn = open_db(&state)?;
 
@@ -2046,9 +2382,7 @@ pub struct DiffStat {
 }
 
 #[tauri::command]
-pub fn get_diff_stats(
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<Vec<DiffStat>, String> {
+pub fn get_diff_stats(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<DiffStat>, String> {
     let ws = workspace(&state)?;
     let conn = open_db(&state)?;
     let mut stmt = conn
@@ -2083,10 +2417,7 @@ pub fn get_diff_stats(
             })
             .collect();
 
-        handles
-            .into_iter()
-            .filter_map(|h| h.join().ok())
-            .collect()
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
     });
 
     // Persist computed stats to DB so subsequent loads are instant
@@ -2126,9 +2457,7 @@ pub struct TaskCount {
 }
 
 #[tauri::command]
-pub fn get_task_counts(
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<Vec<TaskCount>, String> {
+pub fn get_task_counts(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<TaskCount>, String> {
     let conn = open_db(&state)?;
     let mut stmt = conn
         .prepare(
@@ -2341,10 +2670,7 @@ pub fn update_task(
 }
 
 #[tauri::command]
-pub fn delete_task(
-    id: i64,
-    state: tauri::State<'_, WorkspaceState>,
-) -> Result<(), String> {
+pub fn delete_task(id: i64, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
     let conn = open_db(&state)?;
     conn.execute("DELETE FROM tasks WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
@@ -2358,7 +2684,11 @@ pub fn delete_task(
 const KEYRING_SERVICE: &str = "com.joebuilds.project-manager";
 
 #[tauri::command]
-pub fn save_secret(key: String, value: String, cache: tauri::State<'_, TokenCache>) -> Result<(), String> {
+pub fn save_secret(
+    key: String,
+    value: String,
+    cache: tauri::State<'_, TokenCache>,
+) -> Result<(), String> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
     entry.set_password(&value).map_err(|e| e.to_string())?;
     // Update in-memory cache immediately
@@ -2409,7 +2739,10 @@ pub fn update_github_repo_url(
     homepage: Option<String>,
     cache: tauri::State<'_, TokenCache>,
 ) -> Result<(), String> {
-    println!("[update_github_repo_url] repo={} homepage={:?}", owner_repo, homepage);
+    println!(
+        "[update_github_repo_url] repo={} homepage={:?}",
+        owner_repo, homepage
+    );
 
     // Try in-memory cache first to avoid repeated keychain prompts
     let token = {
@@ -2419,8 +2752,8 @@ pub fn update_github_repo_url(
             t
         } else {
             // Not cached yet — read from keychain (may prompt once)
-            let entry = keyring::Entry::new(KEYRING_SERVICE, "github_token")
-                .map_err(|e| e.to_string())?;
+            let entry =
+                keyring::Entry::new(KEYRING_SERVICE, "github_token").map_err(|e| e.to_string())?;
             match entry.get_password() {
                 Ok(t) => {
                     println!("[update_github_repo_url] ✓ token loaded from keychain (now cached)");
@@ -2429,7 +2762,7 @@ pub fn update_github_repo_url(
                 }
                 Err(keyring::Error::NoEntry) => {
                     println!("[update_github_repo_url] ✗ no token in keychain");
-                    return Err("No GitHub token configured. Add one in Settings.".into())
+                    return Err("No GitHub token configured. Add one in Settings.".into());
                 }
                 Err(e) => return Err(e.to_string()),
             }
@@ -2456,7 +2789,10 @@ pub fn update_github_repo_url(
         Ok(())
     } else {
         let body = resp.text().unwrap_or_default();
-        println!("[update_github_repo_url] ✗ GitHub error {} — {}", status, body);
+        println!(
+            "[update_github_repo_url] ✗ GitHub error {} — {}",
+            status, body
+        );
         Err(format!("GitHub API error {}: {}", status, body))
     }
 }
@@ -2534,7 +2870,10 @@ pub fn delete_table_view(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
     let conn = open_db(&state)?;
-    conn.execute("DELETE FROM table_views WHERE id = ?1", rusqlite::params![id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM table_views WHERE id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }

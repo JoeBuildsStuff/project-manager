@@ -4,6 +4,7 @@ import { NodeViewWrapper, ReactNodeViewProps } from '@tiptap/react'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { ImageIcon, AlertCircle } from 'lucide-react'
 import Spinner from '@/components/ui/spinner'
+import { resolveAttachmentUrl } from './note-attachments'
 
 export const CustomImageView = ({ node, selected, updateAttributes }: ReactNodeViewProps) => {
   const [imageUrl, setImageUrl] = useState<string | null>(null)
@@ -46,30 +47,9 @@ export const CustomImageView = ({ node, selected, updateAttributes }: ReactNodeV
       try {
         setIsLoading(true)
         setError(null)
-        
-        // If it's already a full URL, use it directly
-        if (src.startsWith('http') || src.startsWith('data:') || src.startsWith('blob:')) {
-          setImageUrl(src)
-          setIsLoading(false)
-          return
-        }
-        
-        // For file paths, use our unified file API
-        const apiUrl = `/api/files/serve?path=${encodeURIComponent(src)}`
-        
-        const response = await fetch(apiUrl)
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}))
-          throw new Error(`Failed to fetch file: ${response.status} - ${errorData.error || 'Unknown error'}`)
-        }
-        
-        const data = await response.json()
-        if (data.fileUrl) {
-          setImageUrl(data.fileUrl)
-        } else {
-          throw new Error('Invalid response from file API')
-        }
-        
+
+        const resolvedUrl = await resolveAttachmentUrl(src)
+        setImageUrl(resolvedUrl)
         setIsLoading(false)
       } catch (err) {
         console.error('Error fetching image URL:', err)
