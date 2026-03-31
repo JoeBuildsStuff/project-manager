@@ -3,7 +3,144 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ArrowLeft, FolderOpen, Check, Eye, EyeOff, KeyRound, Trash2 } from "lucide-react";
+import { ArrowLeft, FolderOpen, Check, Eye, EyeOff, KeyRound, Trash2, BrainCircuit } from "lucide-react";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reusable secret field hook
+// ─────────────────────────────────────────────────────────────────────────────
+function useSecretField(secretKey: string) {
+  const [hasKey, setHasKey] = useState(false);
+  const [input, setInput] = useState("");
+  const [visible, setVisible] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    invoke<boolean>("has_secret", { key: secretKey })
+      .then(setHasKey)
+      .catch(() => setHasKey(false));
+  }, [secretKey]);
+
+  const save = async () => {
+    const trimmed = input.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    setError("");
+    try {
+      await invoke("save_secret", { key: secretKey, value: trimmed });
+      setHasKey(true);
+      setSaved(true);
+      setInput("");
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    setError("");
+    try {
+      await invoke("delete_secret", { key: secretKey });
+      setHasKey(false);
+      setInput("");
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  return { hasKey, input, setInput, visible, setVisible, saving, saved, setSaved, error, save, remove };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reusable secret field component
+// ─────────────────────────────────────────────────────────────────────────────
+function SecretField({
+  icon,
+  title,
+  description,
+  help,
+  placeholder,
+  maskedDisplay,
+  field,
+}: {
+  icon?: React.ReactNode;
+  title: string;
+  description: string;
+  help?: React.ReactNode;
+  placeholder: string;
+  maskedDisplay: string;
+  field: ReturnType<typeof useSecretField>;
+}) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+          {icon}
+          {title}
+        </h2>
+        <p className="text-xs text-muted-foreground mt-1">{description}</p>
+        {help}
+      </div>
+
+      {field.hasKey ? (
+        <div className="flex items-center gap-2">
+          <div className="flex-1 rounded-md border border-border bg-muted/30 px-3 py-2">
+            <p className="text-xs font-mono text-muted-foreground">{maskedDisplay}</p>
+          </div>
+          <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={field.remove}>
+            <Trash2 className="h-3.5 w-3.5" />
+            Remove
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Input
+              type={field.visible ? "text" : "password"}
+              value={field.input}
+              onChange={(e) => {
+                field.setInput(e.target.value);
+                field.setSaved(false);
+              }}
+              placeholder={placeholder}
+              className="pr-8 font-mono text-xs"
+            />
+            <button
+              type="button"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              onClick={() => field.setVisible(!field.visible)}
+              tabIndex={-1}
+            >
+              {field.visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+          <Button
+            size="sm"
+            className="gap-1.5"
+            onClick={field.save}
+            disabled={field.saving || !field.input.trim()}
+          >
+            {field.saved ? (
+              <>
+                <Check className="h-3.5 w-3.5" />
+                Saved
+              </>
+            ) : field.saving ? (
+              "Saving..."
+            ) : (
+              "Save"
+            )}
+          </Button>
+        </div>
+      )}
+
+      {field.error && <p className="text-xs text-destructive">{field.error}</p>}
+    </div>
+  );
+}
 
 interface Props {
   workspacePath: string | null;
@@ -17,19 +154,11 @@ export default function Settings({ workspacePath, onWorkspaceChanged, onBack }: 
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
 
-  // GitHub token state
-  const [hasToken, setHasToken] = useState(false);
-  const [tokenInput, setTokenInput] = useState("");
-  const [tokenVisible, setTokenVisible] = useState(false);
-  const [tokenSaving, setTokenSaving] = useState(false);
-  const [tokenSaved, setTokenSaved] = useState(false);
-  const [tokenError, setTokenError] = useState("");
-
-  useEffect(() => {
-    invoke<boolean>("has_secret", { key: "github_token" })
-      .then(setHasToken)
-      .catch(() => setHasToken(false));
-  }, []);
+  // Secret fields
+  const githubToken = useSecretField("github_token");
+  const anthropicKey = useSecretField("anthropic_api_key");
+  const openaiKey = useSecretField("openai_api_key");
+  const cerebrasKey = useSecretField("cerebras_api_key");
 
   const handlePickFolder = async () => {
     const result = await open({
@@ -56,35 +185,6 @@ export default function Settings({ workspacePath, onWorkspaceChanged, onBack }: 
       setError(String(e));
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleSaveToken = async () => {
-    const trimmed = tokenInput.trim();
-    if (!trimmed) return;
-    setTokenSaving(true);
-    setTokenError("");
-    try {
-      await invoke("save_secret", { key: "github_token", value: trimmed });
-      setHasToken(true);
-      setTokenSaved(true);
-      setTokenInput("");
-      setTimeout(() => setTokenSaved(false), 2000);
-    } catch (e) {
-      setTokenError(String(e));
-    } finally {
-      setTokenSaving(false);
-    }
-  };
-
-  const handleDeleteToken = async () => {
-    setTokenError("");
-    try {
-      await invoke("delete_secret", { key: "github_token" });
-      setHasToken(false);
-      setTokenInput("");
-    } catch (e) {
-      setTokenError(String(e));
     }
   };
 
@@ -156,16 +256,11 @@ export default function Settings({ workspacePath, onWorkspaceChanged, onBack }: 
           </div>
 
           {/* GitHub Token */}
-          <div className="space-y-3">
-            <div>
-              <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <KeyRound className="h-4 w-4" />
-                GitHub Token
-              </h2>
-              <p className="text-xs text-muted-foreground mt-1">
-                A personal access token used to update repo metadata (e.g. About URL) via the GitHub API.
-                Stored securely in your macOS Keychain — never written to disk.
-              </p>
+          <SecretField
+            icon={<KeyRound className="h-4 w-4" />}
+            title="GitHub Token"
+            description="A personal access token used to update repo metadata (e.g. About URL) via the GitHub API. Stored securely in your macOS Keychain — never written to disk."
+            help={
               <p className="text-xs text-muted-foreground mt-1">
                 Create one at{" "}
                 <button
@@ -177,73 +272,81 @@ export default function Settings({ workspacePath, onWorkspaceChanged, onBack }: 
                 {" "}with <code className="rounded bg-muted px-1 py-0.5 text-[10px]">repo</code> scope
                 (or fine-grained with <code className="rounded bg-muted px-1 py-0.5 text-[10px]">metadata: read/write</code>).
               </p>
+            }
+            placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+            maskedDisplay="ghp_••••••••••••••••••••"
+            field={githubToken}
+          />
+
+          {/* LLM API Keys */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 pt-2">
+              <BrainCircuit className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-medium text-foreground">AI Chat API Keys</h2>
             </div>
-
-            {hasToken ? (
-              <div className="flex items-center gap-2">
-                <div className="flex-1 rounded-md border border-border bg-muted/30 px-3 py-2">
-                  <p className="text-xs font-mono text-muted-foreground">
-                    ghp_••••••••••••••••••••
-                  </p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-1.5 text-xs"
-                  onClick={handleDeleteToken}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Remove
-                </Button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <Input
-                    type={tokenVisible ? "text" : "password"}
-                    value={tokenInput}
-                    onChange={(e) => {
-                      setTokenInput(e.target.value);
-                      setTokenSaved(false);
-                    }}
-                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-                    className="pr-8 font-mono text-xs"
-                  />
-                  <button
-                    type="button"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    onClick={() => setTokenVisible(!tokenVisible)}
-                    tabIndex={-1}
-                  >
-                    {tokenVisible ? (
-                      <EyeOff className="h-3.5 w-3.5" />
-                    ) : (
-                      <Eye className="h-3.5 w-3.5" />
-                    )}
-                  </button>
-                </div>
-                <Button
-                  size="sm"
-                  className="gap-1.5"
-                  onClick={handleSaveToken}
-                  disabled={tokenSaving || !tokenInput.trim()}
-                >
-                  {tokenSaved ? (
-                    <>
-                      <Check className="h-3.5 w-3.5" />
-                      Saved
-                    </>
-                  ) : tokenSaving ? (
-                    "Saving..."
-                  ) : (
-                    "Save"
-                  )}
-                </Button>
-              </div>
-            )}
-
-            {tokenError && <p className="text-xs text-destructive">{tokenError}</p>}
+            <p className="text-xs text-muted-foreground">
+              Provide your own API keys to power the built-in chat assistant.
+              Keys are stored securely in your macOS Keychain and never leave your machine — they are sent
+              directly from this app to the provider over HTTPS.
+            </p>
           </div>
+
+          <SecretField
+            title="Anthropic"
+            description="Powers Claude models in the chat assistant."
+            help={
+              <p className="text-xs text-muted-foreground mt-1">
+                Get your key at{" "}
+                <button
+                  className="text-blue-400 hover:underline"
+                  onClick={() => invoke("open_url", { url: "https://console.anthropic.com/settings/keys" })}
+                >
+                  console.anthropic.com
+                </button>
+              </p>
+            }
+            placeholder="sk-ant-api03-xxxxxxxxxxxx"
+            maskedDisplay="sk-ant-••••••••••••••••"
+            field={anthropicKey}
+          />
+
+          <SecretField
+            title="OpenAI"
+            description="Powers GPT models in the chat assistant."
+            help={
+              <p className="text-xs text-muted-foreground mt-1">
+                Get your key at{" "}
+                <button
+                  className="text-blue-400 hover:underline"
+                  onClick={() => invoke("open_url", { url: "https://platform.openai.com/api-keys" })}
+                >
+                  platform.openai.com
+                </button>
+              </p>
+            }
+            placeholder="sk-proj-xxxxxxxxxxxx"
+            maskedDisplay="sk-proj-••••••••••••••••"
+            field={openaiKey}
+          />
+
+          <SecretField
+            title="Cerebras"
+            description="Powers fast inference models in the chat assistant."
+            help={
+              <p className="text-xs text-muted-foreground mt-1">
+                Get your key at{" "}
+                <button
+                  className="text-blue-400 hover:underline"
+                  onClick={() => invoke("open_url", { url: "https://cloud.cerebras.ai/" })}
+                >
+                  cloud.cerebras.ai
+                </button>
+              </p>
+            }
+            placeholder="csk-xxxxxxxxxxxx"
+            maskedDisplay="csk-••••••••••••••••"
+            field={cerebrasKey}
+          />
         </div>
       </div>
     </div>

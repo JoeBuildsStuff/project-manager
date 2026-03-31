@@ -3030,6 +3030,89 @@ pub fn update_github_repo_url(
 }
 
 // ---------------------------------------------------------------------------
+// LLM API proxy – keeps API keys in Rust, never exposes them to the webview
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn llm_request(
+    provider: String,
+    url: String,
+    body: String,
+    extra_headers: Option<std::collections::HashMap<String, String>>,
+    cache: tauri::State<'_, TokenCache>,
+) -> Result<String, String> {
+    // Map provider to its keychain secret name
+    let secret_key = match provider.as_str() {
+        "anthropic" => "anthropic_api_key",
+        "openai" => "openai_api_key",
+        "cerebras" => "cerebras_api_key",
+        other => return Err(format!("Unknown provider: {other}")),
+    };
+
+    // Retrieve API key from in-memory cache or keychain
+    let api_key = {
+        let mut map = cache.cache.lock().unwrap();
+        if let Some(k) = map.get(secret_key).cloned() {
+            k
+        } else {
+            let entry = keyring::Entry::new(KEYRING_SERVICE, secret_key)
+                .map_err(|e| e.to_string())?;
+            match entry.get_password() {
+                Ok(k) => {
+                    map.insert(secret_key.to_string(), k.clone());
+                    k
+                }
+                Err(keyring::Error::NoEntry) => {
+                    return Err(format!(
+                        "No API key configured for {provider}. Add one in Settings."
+                    ));
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+    };
+
+    // Build the request
+    let client = reqwest::Client::new();
+    let mut req = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .body(body);
+
+    // Inject auth header based on provider
+    match provider.as_str() {
+        "anthropic" => {
+            req = req
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", "2023-06-01");
+        }
+        "openai" | "cerebras" => {
+            req = req.header("Authorization", format!("Bearer {}", api_key));
+        }
+        _ => {} // unreachable due to earlier match
+    }
+
+    // Add any extra headers from the caller
+    if let Some(headers) = extra_headers {
+        for (k, v) in headers {
+            req = req.header(&k, &v);
+        }
+    }
+
+    // Execute the request
+    let resp = req.send().await.map_err(|e| format!("HTTP request failed: {e}"))?;
+
+    let status = resp.status();
+    let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {e}"))?;
+
+    if status.is_success() {
+        Ok(resp_body)
+    } else {
+        Err(format!("API error {}: {}", status.as_u16(), resp_body))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Table views
 // ---------------------------------------------------------------------------
 

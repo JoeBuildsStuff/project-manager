@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { useChatStore } from "@/lib/chat/chat-store";
+import { sendChatRequest } from "@/lib/chat/api";
 import { toast } from "sonner";
 import type { ChatAction, PageContext } from "@/types/chat";
 import type { Attachment } from "@/components/chat/chat-input";
@@ -47,7 +48,7 @@ export function useChat({ onSendMessage, onActionClick }: UseChatProps = {}) {
     return createSession();
   }, [currentSessionId, createSession]);
 
-  // Call /api/chat (handled by Vite middleware in dev, Tauri command in prod)
+  // Call LLM via Rust proxy (API key stays in Keychain, never enters JS)
   const sendToAPI = useCallback(
     async (
       content: string,
@@ -58,42 +59,29 @@ export function useChat({ onSendMessage, onActionClick }: UseChatProps = {}) {
     ) => {
       const { messages: latestMessages } = useChatStore.getState();
 
-      // Determine endpoint from model
-      const isCerebras = model?.startsWith("gpt-oss-120b");
-      const isOpenAI = model?.startsWith("gpt-5");
-      const endpoint = isCerebras
-        ? "/api/chat/cerebras"
-        : isOpenAI
-        ? "/api/chat/openai"
-        : "/api/chat";
-
-      const body: Record<string, unknown> = {
-        message: content,
-        context,
-        messages: latestMessages.slice(-10),
-        model,
-        reasoningEffort,
-      };
-
-      // Timezone context
+      // Build timezone context
+      let clientTz: string | undefined;
+      let clientOffset: string | undefined;
+      let clientNowIso: string | undefined;
+      let clientPath: string | undefined;
       try {
-        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+        clientTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
         const offsetMinutes = new Date().getTimezoneOffset();
         const sign = offsetMinutes <= 0 ? "+" : "-";
         const abs = Math.abs(offsetMinutes);
         const hh = String(Math.floor(abs / 60)).padStart(2, "0");
         const mm = String(abs % 60).padStart(2, "0");
-        body.clientTz = tz;
-        body.clientOffset = `${sign}${hh}:${mm}`;
+        clientOffset = `${sign}${hh}:${mm}`;
         const d = new Date();
         const pad = (n: number) => String(n).padStart(2, "0");
-        body.clientNowIso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${body.clientOffset}`;
-        body.clientPath = window.location.pathname || "";
+        clientNowIso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}${clientOffset}`;
+        clientPath = window.location.pathname || "";
       } catch {}
 
-      // Include attachments as base64 for images (file uploads not supported in Tauri without backend)
+      // Encode attachments
+      let encodedAttachments;
       if (attachments && attachments.length > 0) {
-        const encodedAttachments = await Promise.all(
+        encodedAttachments = await Promise.all(
           attachments.map(async (a) => {
             if (a.type.startsWith("image/")) {
               const buf = await a.file.arrayBuffer();
@@ -108,20 +96,20 @@ export function useChat({ onSendMessage, onActionClick }: UseChatProps = {}) {
             return { name: a.name, type: a.type, size: a.size };
           })
         );
-        body.attachments = encodedAttachments;
       }
 
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+      const result = await sendChatRequest({
+        message: content,
+        context,
+        messages: latestMessages.slice(-10),
+        model,
+        reasoningEffort,
+        clientTz,
+        clientOffset,
+        clientNowIso,
+        clientPath,
+        attachments: encodedAttachments,
       });
-
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
-      }
-
-      const result = await response.json();
 
       // Add assistant message directly to the store
       addMessage({
