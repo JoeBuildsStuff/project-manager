@@ -12,6 +12,9 @@ import Settings from "./components/Settings";
 import TaskTable from "./components/TaskTable";
 import Notes from "./components/Notes";
 import { perfStart, perfEnd } from "./lib/perf";
+import { ChatProvider, ChatBubble, ChatPanel } from "@/components/chat";
+import { useChatStore } from "@/lib/chat/chat-store";
+import { cn } from "@/lib/utils";
 
 interface WorkspaceConfig {
   workspace_path: string | null;
@@ -34,6 +37,7 @@ type View = "projects" | "settings" | "tasks" | "notes";
 const NOTES_SELECTED_KEY = "pm-selected-note-id";
 
 export default function App() {
+  const isChatInset = useChatStore((s) => s.isMaximized);
   const [pendingJumpTarget, setPendingJumpTarget] = useState<"project-table" | "task-table" | null>(null);
   const [workspaceReady, setWorkspaceReady] = useState<boolean | null>(null);
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
@@ -395,8 +399,14 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen overflow-hidden">
-      <SidebarProvider className="h-full overflow-hidden">
+    <ChatProvider>
+    <div className={cn(
+      "h-screen overflow-hidden transition-all duration-300 ease-in-out",
+      isChatInset && "pr-96"
+    )}>
+      <SidebarProvider
+        className="h-full overflow-hidden"
+      >
         <AppSidebar
           statusFilter={statusFilter}
           categoryFilter={categoryFilter}
@@ -500,6 +510,11 @@ export default function App() {
           onCreated={load}
         />
       </SidebarProvider>
+
+      {/* Floating chat bubble + panel */}
+      <ChatBubble />
+      <ChatPanel />
     </div>
+    </ChatProvider>
   );
 }
