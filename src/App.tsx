@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { toast } from "sonner";
 import type { NotesDocument, NotesDocumentSummary, Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, TaskCount } from "./types";
 import AppSidebar from "./components/Sidebar";
 import ProjectTable from "./components/ProjectTable";
@@ -43,7 +44,6 @@ export default function App() {
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [view, setView] = useState<View>("projects");
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const [installing, setInstalling] = useState(false);
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<Project | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -100,14 +100,32 @@ export default function App() {
     return () => { unlisten.then((f) => f()); };
   }, []);
 
-  const handleInstallUpdate = async () => {
-    setInstalling(true);
+  const handleInstallUpdate = useCallback(async () => {
     try {
       await invoke("install_update");
     } catch {
-      setInstalling(false);
+      toast.error("Update failed", { description: "Could not install the update. Please try again." });
     }
-  };
+  }, []);
+
+  const handleInstallUpdateRef = useRef(handleInstallUpdate);
+  handleInstallUpdateRef.current = handleInstallUpdate;
+
+  // Show persistent update toast on launch when update is available
+  useEffect(() => {
+    if (!updateInfo) return;
+    const TOAST_ID = "update-available";
+    toast.info("Update available", {
+      id: TOAST_ID,
+      duration: Infinity,
+      closeButton: true,
+      description: "A new version of Project Manager Desktop is available. The app will relaunch automatically after installing.",
+      action: {
+        label: "Install",
+        onClick: () => handleInstallUpdateRef.current(),
+      },
+    });
+  }, [updateInfo]);
 
   // Load task counts
   const loadTaskCounts = useCallback(async () => {
@@ -419,9 +437,6 @@ export default function App() {
           onHostFilter={(h) => { setView("projects"); setHostFilter(h); }}
           onStageFilter={(s) => { setView("projects"); setStageFilter(s); }}
           filterOptions={filterOptions}
-          updateInfo={updateInfo}
-          onInstallUpdate={handleInstallUpdate}
-          installing={installing}
           onOpenSettings={() => setView("settings")}
           onJumpToProjects={handleJumpToProjects}
           onJumpToTasks={handleJumpToTasks}
