@@ -52,11 +52,6 @@ export function ChatFooterBar() {
     }
   };
 
-  const handleCloseTab = (e: React.MouseEvent, sessionId: string) => {
-    e.stopPropagation();
-    closeSessionTab(sessionId);
-  };
-
   const handleToggleHistory = () => {
     if (!isOpen || isMinimized) {
       setOpen(true);
@@ -81,27 +76,56 @@ export function ChatFooterBar() {
     <div className="shrink-0 flex items-center justify-end bg-background z-50">
       <div className="flex items-center gap-0.5 pr-3 py-0.5">
         {/* Open chat tabs - expand leftward from Ask PM */}
-        {openSessions.map((session) => (
-          <button
-            key={session.id}
-            onClick={() => handleOpenSession(session.id)}
-            className={cn(
-              "group relative h-6 px-2.5 text-xs rounded-md",
-              "hover:bg-accent transition-colors",
-              "max-w-[160px]",
-              "flex items-center gap-1.5 cursor-pointer",
-              session.id === currentSessionId && isOpen && !isMinimized
-                ? "bg-accent text-accent-foreground"
-                : "text-muted-foreground"
-            )}
-          >
-            <span className="truncate">{session.title.slice(0, 20)}</span>
-            <X
-              className="absolute right-2 size-3 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity hover:text-foreground hover:bg-background"
-              onClick={(e) => handleCloseTab(e, session.id)}
-            />
-          </button>
-        ))}
+        {openSessions.map((session) => {
+          const isActive =
+            session.id === currentSessionId && isOpen && !isMinimized;
+          return (
+            <div
+              key={session.id}
+              className={cn(
+                "group flex w-[100px] shrink-0 items-center justify-between rounded-lg px-2 py-1 transition-colors hover:bg-secondary",
+                isActive &&
+                  "bg-secondary text-secondary-foreground hover:bg-secondary"
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => handleOpenSession(session.id)}
+                className="relative min-w-0 flex-1 cursor-pointer overflow-hidden text-left"
+              >
+                <span
+                  className={cn(
+                    "block whitespace-nowrap text-xs",
+                    isActive ? "text-secondary-foreground" : "text-muted-foreground"
+                  )}
+                >
+                  {session.title}
+                </span>
+                <div
+                  className={cn(
+                    "pointer-events-none absolute inset-y-0 right-0 w-8 bg-linear-to-r from-transparent transition-all group-hover:w-10",
+                    isActive
+                      ? "to-accent group-hover:to-accent"
+                      : "to-background group-hover:to-secondary"
+                  )}
+                />
+              </button>
+              <button
+                type="button"
+                aria-label="Close tab"
+                onClick={() => closeSessionTab(session.id)}
+                className="ml-1 flex h-4 w-0 shrink-0 cursor-pointer items-center justify-center overflow-hidden border-0 bg-transparent p-0 opacity-0 transition-all group-hover:w-4 group-hover:opacity-100"
+              >
+                <X
+                  className={cn(
+                    "h-3.5 w-3.5 shrink-0 text-muted-foreground hover:text-foreground",
+                    isActive && "text-accent-foreground/70 hover:text-accent-foreground"
+                  )}
+                />
+              </button>
+            </div>
+          );
+        })}
 
         {/* Ask PM button */}
         <Button
