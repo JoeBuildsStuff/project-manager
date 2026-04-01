@@ -14,7 +14,7 @@ import Settings from "./components/Settings";
 import TaskTable from "./components/TaskTable";
 import Notes from "./components/Notes";
 import { perfStart, perfEnd } from "./lib/perf";
-import { ChatProvider, ChatBubble, ChatPanel } from "@/components/chat";
+import { ChatProvider, ChatFooterBar, ChatPanel } from "@/components/chat";
 import { useChatStore } from "@/lib/chat/chat-store";
 import { cn } from "@/lib/utils";
 
@@ -425,11 +425,11 @@ export default function App() {
   return (
     <ChatProvider>
     <div className={cn(
-      "h-screen overflow-hidden transition-all duration-300 ease-in-out",
+      "h-screen overflow-hidden transition-all duration-300 ease-in-out flex flex-col",
       isChatInset && "pr-96"
     )}>
       <SidebarProvider
-        className="h-full overflow-hidden"
+        className="flex-1 min-h-0 overflow-hidden"
       >
         <AppSidebar
           statusFilter={statusFilter}
@@ -457,48 +457,51 @@ export default function App() {
         />
 
         <SidebarInset className="min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">
-          {view === "settings" ? (
-            <Settings
-              workspacePath={workspacePath}
-              onWorkspaceChanged={handleWorkspaceChanged}
-              onBack={() => setView("projects")}
-            />
-          ) : view === "tasks" ? (
-            <div id="task-table" tabIndex={-1} className="m-2 min-h-0 flex-1 outline-none">
-              <TaskTable
-                project={taskProject}
-                allProjects={allProjects}
-                onBack={handleBackFromTasks}
+          <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+            {view === "settings" ? (
+              <Settings
+                workspacePath={workspacePath}
+                onWorkspaceChanged={handleWorkspaceChanged}
+                onBack={() => setView("projects")}
               />
-            </div>
-          ) : view === "notes" ? (
-            <div id="notes" tabIndex={-1} className="m-2 min-h-0 flex-1 outline-none">
-              <Notes
-                selectedNoteId={selectedNoteId}
-                onRefreshNotesList={refreshNotesList}
-              />
-            </div>
-          ) : (
-            <div id="project-table" tabIndex={-1} className="m-2 min-h-0 flex-1 outline-none">
-              <ProjectTable
-                projects={projects}
-                selected={selected}
-                onSelect={handleSelect}
-                search={search}
-                onSearch={setSearch}
-                onSync={handleSync}
-                onNewProject={() => setNewProjectOpen(true)}
-                syncing={syncing}
-                loading={loading}
-                syncMsg={syncMsg}
-                syncIsError={syncIsError}
-                onStatusChange={handleStatusChange}
-                onDeleteSelected={handleDeleteSelected}
-                taskCounts={taskCounts}
-                onOpenTasks={handleOpenTasks}
-              />
-            </div>
-          )}
+            ) : view === "tasks" ? (
+              <div id="task-table" tabIndex={-1} className="m-2 mb-0 min-h-0 flex-1 outline-none">
+                <TaskTable
+                  project={taskProject}
+                  allProjects={allProjects}
+                  onBack={handleBackFromTasks}
+                />
+              </div>
+            ) : view === "notes" ? (
+              <div id="notes" tabIndex={-1} className="m-2 mb-0 min-h-0 flex-1 outline-none">
+                <Notes
+                  selectedNoteId={selectedNoteId}
+                  onRefreshNotesList={refreshNotesList}
+                />
+              </div>
+            ) : (
+              <div id="project-table" tabIndex={-1} className="m-2 mb-0 min-h-0 flex-1 outline-none">
+                <ProjectTable
+                  projects={projects}
+                  selected={selected}
+                  onSelect={handleSelect}
+                  search={search}
+                  onSearch={setSearch}
+                  onSync={handleSync}
+                  onNewProject={() => setNewProjectOpen(true)}
+                  syncing={syncing}
+                  loading={loading}
+                  syncMsg={syncMsg}
+                  syncIsError={syncIsError}
+                  onStatusChange={handleStatusChange}
+                  onDeleteSelected={handleDeleteSelected}
+                  taskCounts={taskCounts}
+                  onOpenTasks={handleOpenTasks}
+                />
+              </div>
+            )}
+          </div>
+          <ChatFooterBar />
         </SidebarInset>
 
         <ProjectDetail
@@ -532,8 +535,6 @@ export default function App() {
         />
       </SidebarProvider>
 
-      {/* Floating chat bubble + panel */}
-      <ChatBubble />
       <ChatPanel />
     </div>
     </ChatProvider>

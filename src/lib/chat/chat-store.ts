@@ -91,6 +91,9 @@ interface ChatStore {
   layoutMode: "floating" | "inset" | "fullpage";
   lastNonFullpageLayout: "floating" | "inset";
 
+  // Footer tab tracking — session IDs pinned open in the footer bar
+  openSessionIds: string[];
+
   // Computed properties (will be updated whenever state changes)
   currentSession: ChatSession | null;
   messages: ChatMessage[];
@@ -156,6 +159,10 @@ interface ChatStore {
   setShowHistory: (show: boolean) => void;
   setLayoutMode: (mode: "floating" | "inset" | "fullpage") => void;
 
+  // Footer tab management
+  openSessionTab: (sessionId: string) => void;
+  closeSessionTab: (sessionId: string) => void;
+
   // Context management
   updatePageContext: (context: PageContext) => void;
 
@@ -220,6 +227,7 @@ export const useChatStore = create<ChatStore>()(
       lastNonFullpageLayout: "floating",
       messageBranches: {},
       currentBranchRootId: null,
+      openSessionIds: [],
 
       // Session CRUD operations
       createSession: (title?: string) => {
@@ -287,6 +295,7 @@ export const useChatStore = create<ChatStore>()(
             currentSessionId: newCurrentId,
             currentSession,
             messages,
+            openSessionIds: state.openSessionIds.filter((id) => id !== sessionId),
           };
         });
       },
@@ -432,12 +441,23 @@ export const useChatStore = create<ChatStore>()(
             }
           }
 
+          // Auto-add session to footer tabs when title is first generated
+          const oldSession = sessions.find((s) => s.id === currentSessionId);
+          const newSession = updatedSessions.find((s) => s.id === currentSessionId);
+          const titleGenerated =
+            oldSession?.title === "New Chat" &&
+            newSession?.title !== "New Chat";
+          const openSessionIds = titleGenerated && currentSessionId && !state.openSessionIds.includes(currentSessionId)
+            ? [...state.openSessionIds, currentSessionId]
+            : state.openSessionIds;
+
           return {
             sessions: updatedSessions,
             currentSessionId,
             currentSession,
             messages,
             messageBranches,
+            openSessionIds,
           };
         });
       },
@@ -1085,6 +1105,20 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      // Footer tab management
+      openSessionTab: (sessionId) => {
+        set((state) => {
+          if (state.openSessionIds.includes(sessionId)) return state;
+          return { openSessionIds: [...state.openSessionIds, sessionId] };
+        });
+      },
+
+      closeSessionTab: (sessionId) => {
+        set((state) => ({
+          openSessionIds: state.openSessionIds.filter((id) => id !== sessionId),
+        }));
+      },
+
       // Context management
       updatePageContext: (context) => {
         set({ currentContext: context });
@@ -1286,6 +1320,9 @@ export const useChatStore = create<ChatStore>()(
           }
           if (!("lastNonFullpageLayout" in state)) {
             (state as unknown as ChatStore).lastNonFullpageLayout = "floating";
+          }
+          if (!("openSessionIds" in state)) {
+            (state as unknown as ChatStore).openSessionIds = [];
           }
 
           // Ensure signatures exist for each entry if an older state is loaded

@@ -45,7 +45,7 @@ export function ChatPanel() {
           "border-l border-t-0 border-r-0 border-b-0 rounded-none",
         ],
         !isMaximized && [
-          "fixed bottom-2 right-2",
+          "fixed bottom-8 right-2",
           "w-full sm:w-96 h-full sm:h-[600px]",
           "rounded-3xl shadow-2xl",
         ]

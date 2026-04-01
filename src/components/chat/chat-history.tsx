@@ -13,12 +13,14 @@ export function ChatHistory() {
     deleteSession,
     switchToSession,
     getSessions,
+    openSessionTab,
   } = useChatStore();
 
   const sessions = getSessions();
 
   const handleSessionClick = (sessionId: string) => {
     switchToSession(sessionId);
+    openSessionTab(sessionId);
     setShowHistory(false);
   };
 
