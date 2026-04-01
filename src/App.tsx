@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { toast } from "sonner";
+import { Download } from "lucide-react";
 import type { NotesDocument, NotesDocumentSummary, Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, TaskCount } from "./types";
 import AppSidebar from "./components/Sidebar";
 import ProjectTable from "./components/ProjectTable";
@@ -119,9 +120,14 @@ export default function App() {
       id: TOAST_ID,
       duration: Infinity,
       closeButton: true,
-      description: "A new version of Project Manager Desktop is available. The app will relaunch automatically after installing.",
+      description: "A new version of Project Manager is available. The app will relaunch automatically after installing.",
       action: {
-        label: "Install",
+        label: (
+          <span className="inline-flex items-center gap-1.5">
+            <Download className="size-3.5 shrink-0" aria-hidden />
+            Install
+          </span>
+        ),
         onClick: () => handleInstallUpdateRef.current(),
       },
     });

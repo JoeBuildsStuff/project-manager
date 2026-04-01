@@ -1,6 +1,12 @@
 import { useTheme } from "next-themes"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
-import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react"
+import {
+  CircleCheckIcon,
+  InfoIcon,
+  TriangleAlertIcon,
+  OctagonXIcon,
+  Loader2Icon,
+} from "lucide-react"
 import { buttonVariants } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
@@ -34,6 +40,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
           "--border-radius": "var(--radius)",
+          "--width": "400px",
         } as React.CSSProperties
       }
       toastOptions={{
@@ -43,7 +50,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
           description: "!text-muted-foreground !my-1",
           actionButton: cn(
             buttonVariants({ variant: "secondary", size: "xs" }),
-            "col-start-2 row-start-2 justify-self-start !ml-0 !bg-secondary !text-secondary-foreground hover:!bg-secondary/80"
+            "col-start-2 row-start-2 justify-self-start !ml-0 !bg-secondary !rounded-md !text-secondary-foreground hover:!bg-secondary/80"
           ),
           closeButton: cn(
             buttonVariants({ variant: "ghost", size: "icon-sm" }),
