@@ -1,0 +1,105 @@
+import { useState } from "react";
+import { ArrowLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { ProjectDetailContent } from "./ProjectDetailContent";
+import { CategoryBadge, HostBadge, StatusBadge, StageBadge, DeployBadge } from "./StatusBadge";
+import TaskTable from "./TaskTable";
+import type { Project } from "../types";
+
+interface Props {
+  project: Project;
+  allProjects: Project[];
+  onBack: () => void;
+  onFieldChange: (folder_key: string, field: string, value: string | null) => Promise<void>;
+  onRename: (folder_key: string, nextName: string) => Promise<void>;
+  onDelete: (folder_key: string) => Promise<void>;
+}
+
+type Tab = "details" | "tasks";
+
+export default function ProjectFullPage({
+  project: p,
+  allProjects,
+  onBack,
+  onFieldChange,
+  onRename,
+  onDelete,
+}: Props) {
+  const [tab, setTab] = useState<Tab>("details");
+
+  const handleDelete = async (folderKey: string) => {
+    await onDelete(folderKey);
+    onBack();
+  };
+
+  return (
+    <div className="flex h-full flex-col min-h-0">
+      {/* Top bar */}
+      <div className="flex items-center gap-3 border-b px-6 py-3 shrink-0">
+        <Button variant="ghost" size="sm" className="gap-1.5 h-7 text-xs" onClick={onBack}>
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back
+        </Button>
+        <div className="h-4 w-px bg-border" />
+        <div className="flex items-center gap-2 min-w-0">
+          <h1 className="text-base font-semibold truncate">{p.folder_name}</h1>
+          <span className="font-mono text-[10px] text-muted-foreground shrink-0">{p.folder_key}</span>
+        </div>
+        <div className="flex items-center gap-1.5 ml-auto shrink-0">
+          {p.status && <StatusBadge status={p.status} />}
+          {p.category && <CategoryBadge category={p.category} />}
+          {p.stage && <StageBadge stage={p.stage} />}
+          {p.host && <HostBadge host={p.host} />}
+          {p.deploy_platform && <DeployBadge platform={p.deploy_platform} />}
+        </div>
+      </div>
+
+      {/* Tab bar */}
+      <div className="flex items-center gap-1 border-b px-6 shrink-0">
+        <TabButton active={tab === "details"} onClick={() => setTab("details")}>Details</TabButton>
+        <TabButton active={tab === "tasks"} onClick={() => setTab("tasks")}>Tasks</TabButton>
+      </div>
+
+      {/* Content */}
+      {tab === "details" ? (
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="px-6 py-6 max-w-4xl">
+            <ProjectDetailContent
+              project={p}
+              isOpen={true}
+              onFieldChange={onFieldChange}
+              onRename={onRename}
+              onDelete={handleDelete}
+              layout="page"
+            />
+          </div>
+        </ScrollArea>
+      ) : (
+        <div className="flex-1 min-h-0 m-2 mb-0">
+          <TaskTable
+            project={p}
+            allProjects={allProjects}
+            onBack={() => setTab("details")}
+            embedded
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+        active
+          ? "border-foreground text-foreground"
+          : "border-transparent text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}

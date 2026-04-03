@@ -85,7 +85,8 @@ src/
   types.ts                # Shared types, filters, guardrails
   components/
     ProjectTable.tsx       # Projects grid + toolbar + saved views
-    ProjectDetail.tsx     # Detail sheet
+    ProjectFullPage.tsx   # Full-page project view + tasks tab
+    ProjectDetailContent.tsx  # Shared project editor body
     TaskTable.tsx         # Tasks grid
     TaskDetail.tsx
     Notes.tsx             # Notes shell

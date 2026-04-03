@@ -12,17 +12,9 @@ import {
   Loader2,
   ChevronDown,
 } from "lucide-react";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Popover,
   PopoverContent,
@@ -37,18 +29,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { CategoryBadge, StatusBadge, StageBadge, DeployBadge } from "./StatusBadge";
+import { CategoryBadge, HostBadge, StatusBadge, StageBadge, DeployBadge } from "./StatusBadge";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import type { Project } from "../types";
-
-interface Props {
-  project: Project | null;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onFieldChange: (folder_key: string, field: string, value: string | null) => Promise<void>;
-  onRename: (folder_key: string, nextName: string) => Promise<void>;
-  onDelete: (folder_key: string) => Promise<void>;
-}
 
 interface GitStatus {
   folder_key: string;
@@ -65,14 +48,27 @@ const STAGE_OPTIONS = [
 const DEPLOY_OPTIONS = ["vercel", "hetzner", "homelab", "local"];
 const HOST_OPTIONS = ["github", "gitlab", "bitbucket", "gitea"];
 
-export default function ProjectDetail({
+export interface ProjectDetailContentProps {
+  project: Project;
+  isOpen: boolean;
+  onFieldChange: (folder_key: string, field: string, value: string | null) => Promise<void>;
+  onRename: (folder_key: string, nextName: string) => Promise<void>;
+  onDelete: (folder_key: string) => Promise<void>;
+  /** Optional extra action slot rendered in the quick-actions row */
+  extraActions?: React.ReactNode;
+  /** Two-column layout mode for full-page view */
+  layout?: "sheet" | "page";
+}
+
+export function ProjectDetailContent({
   project: p,
-  open,
-  onOpenChange,
+  isOpen,
   onFieldChange,
   onRename,
   onDelete,
-}: Props) {
+  extraActions,
+  layout = "sheet",
+}: ProjectDetailContentProps) {
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [gitLoading, setGitLoading] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -82,19 +78,17 @@ export default function ProjectDetail({
   const [actionError, setActionError] = useState("");
 
   useEffect(() => {
-    if (!p || !open) return;
+    if (!isOpen) return;
     setGitStatus(null);
     setGitLoading(true);
     invoke<GitStatus>("get_git_status", { folderKey: p.folder_key })
       .then(setGitStatus)
       .catch(() => setGitStatus(null))
       .finally(() => setGitLoading(false));
-  }, [p?.folder_key, open]);
+  }, [p.folder_key, isOpen]);
 
   const openWith = (cmd: string, arg: string) =>
     invoke(cmd, cmd === "open_url" ? { url: arg } : { folderKey: arg });
-
-  if (!p) return null;
 
   const openRenameDialog = () => {
     setActionError("");
@@ -124,220 +118,106 @@ export default function ProjectDetail({
     onFieldChange(p.folder_key, field, value);
 
   const handleProductionUrl = async (value: string | null) => {
-    console.log("[prod_url] saving to SQLite:", { folder_key: p.folder_key, value });
     await handleField("production_url", value);
-    console.log("[prod_url] ✓ SQLite saved");
-
     if (p.host === "github" && p.repo_owner) {
-      console.log("[prod_url] host=github, repo_owner=%s — calling GitHub API", p.repo_owner);
       try {
-        await invoke("update_github_repo_url", {
-          ownerRepo: p.repo_owner,
-          homepage: value,
-        });
-        console.log("[prod_url] ✓ GitHub About URL updated");
+        await invoke("update_github_repo_url", { ownerRepo: p.repo_owner, homepage: value });
       } catch (e) {
-        console.error("[prod_url] ✗ GitHub API error:", e);
         setActionError(String(e));
       }
-    } else {
-      console.log("[prod_url] skipping GitHub API (host=%s, repo_owner=%s)", p.host, p.repo_owner);
     }
   };
 
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="flex w-[360px] flex-col p-0 sm:max-w-[360px]">
-        <SheetHeader className="px-5 pb-2 pt-5">
-          <div className="flex items-center gap-2">
-            <SheetTitle className="text-base">{p.folder_name}</SheetTitle>
-            {gitStatus?.is_dirty && (
-              <span title="Uncommitted changes">
-                <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-yellow-400" />
-              </span>
-            )}
-          </div>
-          <SheetDescription className="font-mono text-[10px]">{p.folder_key}</SheetDescription>
-        </SheetHeader>
+  const quickActions = (
+    <div className="flex flex-wrap gap-1.5">
+      <ActionButton icon={<FolderOpen className="h-3.5 w-3.5" />} onClick={() => openWith("open_in_finder", p.folder_key)}>
+        Finder
+      </ActionButton>
+      <ActionButton icon={<Code2 className="h-3.5 w-3.5" />} onClick={() => openWith("open_in_vscode", p.folder_key)}>
+        Cursor
+      </ActionButton>
+      {p.production_url && (
+        <ActionButton icon={<ExternalLink className="h-3.5 w-3.5" />} onClick={() => openWith("open_url", p.production_url as string)}>
+          Live site
+        </ActionButton>
+      )}
+      {p.repo?.startsWith("http") && (
+        <ActionButton icon={<GitBranch className="h-3.5 w-3.5" />} onClick={() => openWith("open_url", p.repo as string)}>
+          Repo
+        </ActionButton>
+      )}
+      <ActionButton icon={<Pencil className="h-3.5 w-3.5" />} onClick={openRenameDialog} disabled={renaming}>
+        Rename
+      </ActionButton>
+      <ActionButton icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => { setActionError(""); setDeleteOpen(true); }} disabled={renaming} variant="destructive">
+        Delete
+      </ActionButton>
+      {extraActions}
+    </div>
+  );
 
-        <ScrollArea className="flex-1">
-          <div className="space-y-5 px-5 pb-6">
-            {p.description && (
-              <p className="text-xs leading-relaxed text-muted-foreground">{p.description}</p>
-            )}
+  const detailFields = (
+    <dl className="space-y-1.5">
+      <EditableField label="Status" value={p.status} options={STATUS_OPTIONS} onSelect={(v) => handleField("status", v)} renderBadge={(v) => <StatusBadge status={v} />} />
+      <EditableField label="Category" value={p.category} options={CATEGORY_OPTIONS} onSelect={(v) => handleField("category", v)} renderBadge={(v) => <CategoryBadge category={v} />} />
+      <EditableField label="Stage" value={p.stage} options={STAGE_OPTIONS} onSelect={(v) => handleField("stage", v)} renderBadge={(v) => <StageBadge stage={v} />} clearable />
+      <EditableField label="Host" value={p.host} options={HOST_OPTIONS} onSelect={(v) => handleField("host", v)} renderBadge={(v) => <HostBadge host={v} />} clearable />
+      <EditableField label="Deploy" value={p.deploy_platform} options={DEPLOY_OPTIONS} onSelect={(v) => handleField("deploy_platform", v)} renderBadge={(v) => <DeployBadge platform={v} />} clearable />
+      <EditableTextField label="Prod URL" value={p.production_url} placeholder="https://example.com" onSave={handleProductionUrl} />
+      <Field label="Owner" value={p.repo_owner} />
+      {p.vercel_project_name && <Field label="Vercel" value={p.vercel_project_name} />}
+      <Field label="Commits" value={p.commit_count?.toString()} />
+      <Field label="Last commit" value={p.last_commit_date?.split("T")[0]} />
+      {p.days_since_last_commit != null && <Field label="Days ago" value={p.days_since_last_commit.toString()} />}
+    </dl>
+  );
 
-            {/* Quick actions */}
-            <div>
-              <SectionLabel>Quick actions</SectionLabel>
-              <div className="flex flex-wrap gap-1.5">
-                <ActionButton
-                  icon={<FolderOpen className="h-3.5 w-3.5" />}
-                  onClick={() => openWith("open_in_finder", p.folder_key)}
-                >
-                  Finder
-                </ActionButton>
-                <ActionButton
-                  icon={<Code2 className="h-3.5 w-3.5" />}
-                  onClick={() => openWith("open_in_vscode", p.folder_key)}
-                >
-                  Cursor
-                </ActionButton>
-                {p.production_url && (
-                  <ActionButton
-                    icon={<ExternalLink className="h-3.5 w-3.5" />}
-                    onClick={() => openWith("open_url", p.production_url as string)}
-                  >
-                    Live site
-                  </ActionButton>
-                )}
-                {p.repo?.startsWith("http") && (
-                  <ActionButton
-                    icon={<GitBranch className="h-3.5 w-3.5" />}
-                    onClick={() => openWith("open_url", p.repo as string)}
-                  >
-                    Repo
-                  </ActionButton>
-                )}
-                <ActionButton
-                  icon={<Pencil className="h-3.5 w-3.5" />}
-                  onClick={openRenameDialog}
-                  disabled={renaming}
-                >
-                  Rename
-                </ActionButton>
-                <ActionButton
-                  icon={<Trash2 className="h-3.5 w-3.5" />}
-                  onClick={() => {
-                    setActionError("");
-                    setDeleteOpen(true);
-                  }}
-                  disabled={renaming}
-                  variant="destructive"
-                >
-                  Delete
-                </ActionButton>
-              </div>
-            </div>
+  const gitBlock = (
+    <div>
+      <SectionLabel>
+        <GitCommit className="h-3 w-3" />
+        Git status
+        {gitStatus?.is_dirty && (
+          <Badge variant="yellow" className="ml-1 text-[10px]">dirty</Badge>
+        )}
+      </SectionLabel>
+      <div className="min-h-[32px] rounded-md bg-muted px-2 py-1.5">
+        {gitLoading && (
+          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Loading…
+          </span>
+        )}
+        {!gitLoading && gitStatus && (
+          gitStatus.output.trim()
+            ? <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-yellow-400">{gitStatus.output}</pre>
+            : <span className="text-[11px] text-muted-foreground">Clean</span>
+        )}
+        {!gitLoading && !gitStatus && (
+          <span className="text-[11px] text-muted-foreground">Not a git repo</span>
+        )}
+      </div>
+    </div>
+  );
 
-            {actionError && (
-              <p className="text-xs text-destructive">{actionError}</p>
-            )}
+  const repoBlock = p.repo && (
+    <div>
+      <SectionLabel>Repo</SectionLabel>
+      <p className="break-all rounded-md bg-muted px-2 py-1.5 font-mono text-[10px] text-muted-foreground">
+        {p.repo}
+      </p>
+    </div>
+  );
 
-            <Separator />
+  const deploymentBlock = p.deployment && (
+    <div>
+      <SectionLabel>Deployment</SectionLabel>
+      <p className="text-xs leading-relaxed text-muted-foreground">{p.deployment}</p>
+    </div>
+  );
 
-            {/* Details — editable fields */}
-            <div>
-              <SectionLabel>Details</SectionLabel>
-              <dl className="space-y-1.5">
-                <EditableField
-                  label="Status"
-                  value={p.status}
-                  options={STATUS_OPTIONS}
-                  onSelect={(v) => handleField("status", v)}
-                  renderBadge={(v) => <StatusBadge status={v} />}
-                />
-                <EditableField
-                  label="Category"
-                  value={p.category}
-                  options={CATEGORY_OPTIONS}
-                  onSelect={(v) => handleField("category", v)}
-                  renderBadge={(v) => <CategoryBadge category={v} />}
-                />
-                <EditableField
-                  label="Stage"
-                  value={p.stage}
-                  options={STAGE_OPTIONS}
-                  onSelect={(v) => handleField("stage", v)}
-                  renderBadge={(v) => <StageBadge stage={v} />}
-                  clearable
-                />
-                <EditableField
-                  label="Host"
-                  value={p.host}
-                  options={HOST_OPTIONS}
-                  onSelect={(v) => handleField("host", v)}
-                  clearable
-                />
-                <EditableField
-                  label="Deploy"
-                  value={p.deploy_platform}
-                  options={DEPLOY_OPTIONS}
-                  onSelect={(v) => handleField("deploy_platform", v)}
-                  renderBadge={(v) => <DeployBadge platform={v} />}
-                  clearable
-                />
-                <EditableTextField
-                  label="Prod URL"
-                  value={p.production_url}
-                  placeholder="https://example.com"
-                  onSave={handleProductionUrl}
-                />
-                <Field label="Owner" value={p.repo_owner} />
-                {p.vercel_project_name && <Field label="Vercel" value={p.vercel_project_name} />}
-                <Field label="Commits" value={p.commit_count?.toString()} />
-                <Field label="Last commit" value={p.last_commit_date?.split("T")[0]} />
-                {p.days_since_last_commit != null && (
-                  <Field label="Days ago" value={p.days_since_last_commit.toString()} />
-                )}
-              </dl>
-            </div>
-
-            {p.repo && (
-              <>
-                <Separator />
-                <div>
-                  <SectionLabel>Repo</SectionLabel>
-                  <p className="break-all rounded-md bg-muted px-2 py-1.5 font-mono text-[10px] text-muted-foreground">
-                    {p.repo}
-                  </p>
-                </div>
-              </>
-            )}
-
-            <Separator />
-
-            {/* Git status */}
-            <div>
-              <SectionLabel>
-                <GitCommit className="h-3 w-3" />
-                Git status
-                {gitStatus?.is_dirty && (
-                  <Badge variant="yellow" className="ml-1 text-[10px]">
-                    dirty
-                  </Badge>
-                )}
-              </SectionLabel>
-              <div className="min-h-[32px] rounded-md bg-muted px-2 py-1.5">
-                {gitLoading && (
-                  <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    Loading…
-                  </span>
-                )}
-                {!gitLoading && gitStatus && (
-                  gitStatus.output.trim()
-                    ? <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-yellow-400">{gitStatus.output}</pre>
-                    : <span className="text-[11px] text-muted-foreground">Clean</span>
-                )}
-                {!gitLoading && !gitStatus && (
-                  <span className="text-[11px] text-muted-foreground">Not a git repo</span>
-                )}
-              </div>
-            </div>
-
-            {p.deployment && (
-              <>
-                <Separator />
-                <div>
-                  <SectionLabel>Deployment</SectionLabel>
-                  <p className="text-xs leading-relaxed text-muted-foreground">{p.deployment}</p>
-                </div>
-              </>
-            )}
-          </div>
-        </ScrollArea>
-      </SheetContent>
-
+  const dialogs = (
+    <>
       <RenameFolderDialog
         folderKey={p.folder_key}
         folderName={p.folder_name}
@@ -348,14 +228,103 @@ export default function ProjectDetail({
         onNextNameChange={setNextName}
         onConfirm={handleRename}
       />
-
       <DeleteProjectDialog
         project={p}
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
         onConfirm={onDelete}
       />
-    </Sheet>
+    </>
+  );
+
+  if (layout === "page") {
+    return (
+      <>
+        {p.description && (
+          <p className="text-sm leading-relaxed text-muted-foreground mb-6">{p.description}</p>
+        )}
+
+        <div>
+          <SectionLabel>Quick actions</SectionLabel>
+          {quickActions}
+        </div>
+
+        {actionError && <p className="text-xs text-destructive mt-3">{actionError}</p>}
+
+        <Separator className="my-6" />
+
+        <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+          {/* Left column */}
+          <div className="space-y-6">
+            <div>
+              <SectionLabel>Details</SectionLabel>
+              {detailFields}
+            </div>
+            {repoBlock && (
+              <>
+                <Separator />
+                {repoBlock}
+              </>
+            )}
+          </div>
+
+          {/* Right column */}
+          <div className="space-y-6">
+            {gitBlock}
+            {deploymentBlock && (
+              <>
+                <Separator />
+                {deploymentBlock}
+              </>
+            )}
+          </div>
+        </div>
+
+        {dialogs}
+      </>
+    );
+  }
+
+  // Sheet layout (original single-column)
+  return (
+    <div className="space-y-5 px-5 pb-6">
+      {p.description && (
+        <p className="text-xs leading-relaxed text-muted-foreground">{p.description}</p>
+      )}
+
+      <div>
+        <SectionLabel>Quick actions</SectionLabel>
+        {quickActions}
+      </div>
+
+      {actionError && <p className="text-xs text-destructive">{actionError}</p>}
+
+      <Separator />
+
+      <div>
+        <SectionLabel>Details</SectionLabel>
+        {detailFields}
+      </div>
+
+      {repoBlock && (
+        <>
+          <Separator />
+          {repoBlock}
+        </>
+      )}
+
+      <Separator />
+      {gitBlock}
+
+      {deploymentBlock && (
+        <>
+          <Separator />
+          {deploymentBlock}
+        </>
+      )}
+
+      {dialogs}
+    </div>
   );
 }
 
@@ -394,9 +363,7 @@ function EditableField({
             {value && renderBadge ? (
               renderBadge(value)
             ) : value ? (
-              <Badge variant="gray" className="text-[11px] font-medium">
-                {value}
-              </Badge>
+              <Badge variant="gray" className="text-[11px] font-medium">{value}</Badge>
             ) : (
               <span className="text-muted-foreground/40 italic">none</span>
             )}
@@ -415,9 +382,7 @@ function EditableField({
               {options.map((opt) => (
                 <button
                   key={opt}
-                  className={`flex items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted ${
-                    opt === value ? "bg-muted font-medium" : ""
-                  }`}
+                  className={`flex items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted ${opt === value ? "bg-muted font-medium" : ""}`}
                   onClick={() => handleSelect(opt)}
                 >
                   {renderBadge ? renderBadge(opt) : opt}
@@ -432,7 +397,7 @@ function EditableField({
 }
 
 // ---------------------------------------------------------------------------
-// Inline editable text field (click to edit, Enter/blur to save)
+// Inline editable text field
 // ---------------------------------------------------------------------------
 
 function EditableTextField({
@@ -551,9 +516,7 @@ function RenameFolderDialog({
           </p>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button onClick={onConfirm} disabled={renaming}>
             {renaming ? "Renaming…" : "Rename"}
           </Button>
@@ -567,7 +530,7 @@ function RenameFolderDialog({
 // Utility components
 // ---------------------------------------------------------------------------
 
-function SectionLabel({ children }: { children: React.ReactNode }) {
+export function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
       {children}
@@ -575,13 +538,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Field({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
+export function Field({ label, value }: { label: string; value: React.ReactNode }) {
   if (!value) return null;
   return (
     <div className="flex items-baseline gap-2 text-xs">
@@ -591,7 +548,7 @@ function Field({
   );
 }
 
-function ActionButton({
+export function ActionButton({
   onClick,
   icon,
   children,

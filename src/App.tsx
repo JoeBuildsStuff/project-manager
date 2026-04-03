@@ -7,12 +7,13 @@ import { Download } from "lucide-react";
 import type { NotesDocument, NotesDocumentSummary, Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, TaskCount } from "./types";
 import AppSidebar from "./components/Sidebar";
 import ProjectTable from "./components/ProjectTable";
-import ProjectDetail from "./components/ProjectDetail";
 import NewProjectDialog from "./components/NewProjectDialog";
 import WorkspaceSetup from "./components/WorkspaceSetup";
 import Settings from "./components/Settings";
 import TaskTable from "./components/TaskTable";
 import Notes from "./components/Notes";
+import Terminal from "./components/Terminal";
+import ProjectFullPage from "./components/ProjectFullPage";
 import { perfStart, perfEnd } from "./lib/perf";
 import { ChatProvider, ChatFooterBar, ChatPanel } from "@/components/chat";
 import { useChatStore } from "@/lib/chat/chat-store";
@@ -34,7 +35,7 @@ interface DiffStat {
   lines_removed: number | null;
 }
 
-type View = "projects" | "settings" | "tasks" | "notes";
+type View = "projects" | "settings" | "tasks" | "notes" | "terminal" | "project-detail";
 
 const NOTES_SELECTED_KEY = "pm-selected-note-id";
 
@@ -47,7 +48,6 @@ export default function App() {
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<Project | null>(null);
-  const [sheetOpen, setSheetOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
@@ -62,6 +62,7 @@ export default function App() {
 
   // Task view state
   const [taskProject, setTaskProject] = useState<Project | null>(null);
+  const [fullPageProject, setFullPageProject] = useState<Project | null>(null);
   const [taskCounts, setTaskCounts] = useState<Map<string, TaskCount>>(new Map());
 
   const [notesList, setNotesList] = useState<NotesDocumentSummary[]>([]);
@@ -215,14 +216,14 @@ export default function App() {
       });
       perfEnd(`get_projects (${rows.length} rows)`, t);
       setAllProjects(rows);
-      if (selected) {
-        const updated = rows.find((p) => p.folder_key === selected.folder_key);
-        setSelected(updated ?? null);
+      if (fullPageProject) {
+        const updated = rows.find((p) => p.folder_key === fullPageProject.folder_key);
+        setFullPageProject(updated ?? null);
       }
     } finally {
       setLoading(false);
     }
-  }, [selected?.folder_key]);
+  }, [fullPageProject?.folder_key]);
 
   // Only fetch from DB when workspace becomes ready (not on filter changes)
   useEffect(() => {
@@ -320,7 +321,7 @@ export default function App() {
 
   const handleSelect = (p: Project) => {
     setSelected(p);
-    setSheetOpen(true);
+    handleOpenFullPage(p);
   };
 
   const handleStatusChange = async (folder_key: string, status: string) => {
@@ -331,9 +332,9 @@ export default function App() {
   const handleFieldChange = async (folder_key: string, field: string, value: string | null) => {
     await invoke("update_project_field", { folderKey: folder_key, field, value });
     await load();
-    if (selected?.folder_key === folder_key) {
+    if (fullPageProject?.folder_key === folder_key) {
       const updated = await invoke<Project | null>("get_project", { folderKey: folder_key });
-      setSelected(updated);
+      setFullPageProject(updated);
     }
   };
 
@@ -341,7 +342,6 @@ export default function App() {
     await invoke("delete_projects", { folderKeys });
     if (selected && folderKeys.includes(selected.folder_key)) {
       setSelected(null);
-      setSheetOpen(false);
     }
     await load();
     loadTaskCounts();
@@ -350,7 +350,6 @@ export default function App() {
   const handleOpenTasks = (project: Project) => {
     setTaskProject(project);
     setView("tasks");
-    setSheetOpen(false);
   };
 
   const handleBackFromTasks = () => {
@@ -365,16 +364,29 @@ export default function App() {
   };
 
   const handleJumpToTasks = () => {
-    const scope =
-      sheetOpen && selected ? selected : taskProject;
+    const scope = fullPageProject ?? taskProject;
     setTaskProject(scope ?? null);
     setView("tasks");
-    setSheetOpen(false);
     setPendingJumpTarget("task-table");
   };
 
   const handleJumpToNotes = () => {
     setView("notes");
+  };
+
+  const handleJumpToTerminal = () => {
+    setView("terminal");
+  };
+
+  const handleOpenFullPage = (project: Project) => {
+    setSelected(project);
+    setFullPageProject(project);
+    setView("project-detail");
+  };
+
+  const handleBackFromFullPage = () => {
+    setView("projects");
+    setFullPageProject(null);
   };
 
   useEffect(() => {
@@ -447,6 +459,7 @@ export default function App() {
           onJumpToProjects={handleJumpToProjects}
           onJumpToTasks={handleJumpToTasks}
           onJumpToNotes={handleJumpToNotes}
+          onJumpToTerminal={handleJumpToTerminal}
           activeView={view}
           taskProject={taskProject}
           notesList={notesList}
@@ -479,6 +492,32 @@ export default function App() {
                   onRefreshNotesList={refreshNotesList}
                 />
               </div>
+            ) : view === "terminal" ? (
+              <div id="terminal" tabIndex={-1} className="m-2 mb-0 min-h-0 flex-1 outline-none">
+                <Terminal />
+              </div>
+            ) : view === "project-detail" && fullPageProject ? (
+              <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                <ProjectFullPage
+                  project={fullPageProject}
+                  allProjects={allProjects}
+                  onBack={handleBackFromFullPage}
+                  onFieldChange={handleFieldChange}
+                  onRename={async (folderKey, nextName) => {
+                    const nextKey = await invoke<string>("rename_project_folder", {
+                      folderKey,
+                      newName: nextName,
+                    });
+                    await load();
+                    const updated = await invoke<Project | null>("get_project", { folderKey: nextKey });
+                    setFullPageProject(updated);
+                  }}
+                  onDelete={async (folderKey) => {
+                    await invoke("delete_project_folder", { folderKey });
+                    await load();
+                  }}
+                />
+              </div>
             ) : (
               <div id="project-table" tabIndex={-1} className="m-2 mb-0 min-h-0 flex-1 outline-none">
                 <ProjectTable
@@ -503,30 +542,6 @@ export default function App() {
           </div>
           <ChatFooterBar />
         </SidebarInset>
-
-        <ProjectDetail
-          project={selected}
-          open={sheetOpen}
-          onOpenChange={setSheetOpen}
-          onFieldChange={handleFieldChange}
-          onRename={async (folderKey, nextName) => {
-            const nextKey = await invoke<string>("rename_project_folder", {
-              folderKey,
-              newName: nextName,
-            });
-            await load();
-            const updated = await invoke<Project | null>("get_project", { folderKey: nextKey });
-            setSelected(updated);
-          }}
-          onDelete={async (folderKey) => {
-            await invoke("delete_project_folder", { folderKey });
-            if (selected?.folder_key === folderKey) {
-              setSelected(null);
-              setSheetOpen(false);
-            }
-            await load();
-          }}
-        />
 
         <NewProjectDialog
           open={newProjectOpen}

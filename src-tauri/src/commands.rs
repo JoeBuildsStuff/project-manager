@@ -2929,10 +2929,17 @@ pub fn save_secret(
 }
 
 #[tauri::command]
-pub fn get_secret(key: String) -> Result<Option<String>, String> {
+pub fn get_secret(key: String, cache: tauri::State<'_, TokenCache>) -> Result<Option<String>, String> {
+    // Check in-memory cache first to avoid repeated keychain prompts
+    if let Some(v) = cache.cache.lock().unwrap().get(&key).cloned() {
+        return Ok(Some(v));
+    }
     let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
     match entry.get_password() {
-        Ok(pw) => Ok(Some(pw)),
+        Ok(pw) => {
+            cache.cache.lock().unwrap().insert(key, pw.clone());
+            Ok(Some(pw))
+        }
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
@@ -2952,10 +2959,17 @@ pub fn delete_secret(key: String, cache: tauri::State<'_, TokenCache>) -> Result
 }
 
 #[tauri::command]
-pub fn has_secret(key: String) -> Result<bool, String> {
+pub fn has_secret(key: String, cache: tauri::State<'_, TokenCache>) -> Result<bool, String> {
+    // Check in-memory cache first to avoid repeated keychain prompts
+    if cache.cache.lock().unwrap().contains_key(&key) {
+        return Ok(true);
+    }
     let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
     match entry.get_password() {
-        Ok(_) => Ok(true),
+        Ok(pw) => {
+            cache.cache.lock().unwrap().insert(key, pw);
+            Ok(true)
+        }
         Err(keyring::Error::NoEntry) => Ok(false),
         Err(e) => Err(e.to_string()),
     }
@@ -3191,4 +3205,26 @@ pub fn delete_table_view(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct TerminalOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+}
+
+#[tauri::command]
+pub fn execute_terminal_command(command: String) -> Result<TerminalOutput, String> {
+    let output = Command::new("zsh")
+        .arg("-c")
+        .arg(&command)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    Ok(TerminalOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+    })
 }

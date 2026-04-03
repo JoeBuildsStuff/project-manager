@@ -176,6 +176,7 @@ pub fn run() {
             get_table_views,
             save_table_view,
             delete_table_view,
+            execute_terminal_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

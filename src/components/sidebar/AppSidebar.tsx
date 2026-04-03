@@ -1,4 +1,4 @@
-import { Check, File, Kanban, Settings } from "lucide-react";
+import { Check, File, Kanban, Settings, Terminal } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -36,6 +36,7 @@ export interface AppSidebarProps {
   onJumpToProjects?: () => void;
   onJumpToTasks?: () => void;
   onJumpToNotes?: () => void;
+  onJumpToTerminal?: () => void;
   activeView?: string;
   taskProject?: Project | null;
   notesList?: NotesDocumentSummary[];
@@ -61,6 +62,7 @@ export default function AppSidebar({
   onJumpToProjects,
   onJumpToTasks,
   onJumpToNotes,
+  onJumpToTerminal,
   activeView,
   taskProject,
   notesList = [],
@@ -117,6 +119,17 @@ export default function AppSidebar({
                 >
                   <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span>Task Table</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeView === "terminal"}
+                  onClick={onJumpToTerminal}
+                  className="w-full"
+                  tooltip="Terminal"
+                >
+                  <Terminal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span>Terminal</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>

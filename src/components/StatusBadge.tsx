@@ -1,6 +1,7 @@
 import {
   Zap, Inbox, Archive, Kanban, BookOpen, Wrench, Globe, Server, Home,
   Lightbulb, Hammer, Target, TrendingUp, Layers, LayoutGrid, Expand, PauseCircle, TrendingDown, Skull, RotateCcw,
+  Cloud,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 type BadgeVariant =
@@ -18,6 +19,14 @@ type BadgeVariant =
   | "indigo"
   | "purple"
   | "pink";
+
+function makeClickProps(onClick?: () => void) {
+  if (!onClick) return { className: "gap-1 text-[11px] font-medium" };
+  return {
+    className: "gap-1 text-[11px] font-medium cursor-pointer hover:opacity-80 transition-opacity",
+    onClick: (e: React.MouseEvent) => { e.stopPropagation(); onClick(); },
+  };
+}
 
 const STATUS_CONFIG: Record<string, { variant: BadgeVariant; icon: React.ElementType }> = {
   active:   { variant: "green",  icon: Zap     },
@@ -39,39 +48,12 @@ const DEPLOY_CONFIG: Record<string, { variant: BadgeVariant; icon: React.Element
   local:   { variant: "gray",   icon: Server },
 };
 
-export function StatusBadge({ status }: { status: string | null }) {
-  if (!status) return null;
-  const cfg = STATUS_CONFIG[status];
-  if (!cfg) return (
-    <Badge variant="gray" className="text-[11px] font-medium">
-      {status}
-    </Badge>
-  );
-  const Icon = cfg.icon;
-  return (
-    <Badge variant={cfg.variant} className="gap-1 text-[11px] font-medium">
-      <Icon className="h-2.5 w-2.5" />
-      {status}
-    </Badge>
-  );
-}
-
-export function CategoryBadge({ category }: { category: string | null }) {
-  if (!category) return null;
-  const cfg = CATEGORY_CONFIG[category];
-  if (!cfg) return (
-    <Badge variant="gray" className="text-[11px] font-medium">
-      {category}
-    </Badge>
-  );
-  const Icon = cfg.icon;
-  return (
-    <Badge variant={cfg.variant} className="gap-1 text-[11px] font-medium">
-      <Icon className="h-2.5 w-2.5" />
-      {category}
-    </Badge>
-  );
-}
+const HOST_CONFIG: Record<string, { variant: BadgeVariant; icon: React.ElementType }> = {
+  github:    { variant: "gray",   icon: Cloud  },
+  gitlab:    { variant: "orange", icon: Cloud  },
+  bitbucket: { variant: "blue",   icon: Cloud  },
+  local:     { variant: "gray",   icon: Server },
+};
 
 const STAGE_CONFIG: Record<string, { variant: BadgeVariant; icon: React.ElementType }> = {
   idea:     { variant: "gray",    icon: Lightbulb   },
@@ -87,36 +69,72 @@ const STAGE_CONFIG: Record<string, { variant: BadgeVariant; icon: React.ElementT
   reborn:   { variant: "amber",   icon: RotateCcw   },
 };
 
-export function StageBadge({ stage }: { stage: string | null }) {
-  if (!stage) return null;
-  const cfg = STAGE_CONFIG[stage];
-  if (!cfg) return (
-    <Badge variant="gray" className="text-[11px] font-medium">
-      {stage}
-    </Badge>
-  );
+export function StatusBadge({ status, onClick }: { status: string | null; onClick?: () => void }) {
+  if (!status) return null;
+  const cfg = STATUS_CONFIG[status];
+  const clickProps = makeClickProps(onClick);
+  if (!cfg) return <Badge variant="gray" {...clickProps}>{status}</Badge>;
   const Icon = cfg.icon;
   return (
-    <Badge variant={cfg.variant} className="gap-1 text-[11px] font-medium">
+    <Badge variant={cfg.variant} {...clickProps}>
+      <Icon className="h-2.5 w-2.5" />
+      {status}
+    </Badge>
+  );
+}
+
+export function CategoryBadge({ category, onClick }: { category: string | null; onClick?: () => void }) {
+  if (!category) return null;
+  const cfg = CATEGORY_CONFIG[category];
+  const clickProps = makeClickProps(onClick);
+  if (!cfg) return <Badge variant="gray" {...clickProps}>{category}</Badge>;
+  const Icon = cfg.icon;
+  return (
+    <Badge variant={cfg.variant} {...clickProps}>
+      <Icon className="h-2.5 w-2.5" />
+      {category}
+    </Badge>
+  );
+}
+
+export function StageBadge({ stage, onClick }: { stage: string | null; onClick?: () => void }) {
+  if (!stage) return null;
+  const cfg = STAGE_CONFIG[stage];
+  const clickProps = makeClickProps(onClick);
+  if (!cfg) return <Badge variant="gray" {...clickProps}>{stage}</Badge>;
+  const Icon = cfg.icon;
+  return (
+    <Badge variant={cfg.variant} {...clickProps}>
       <Icon className="h-2.5 w-2.5" />
       {stage}
     </Badge>
   );
 }
 
-export function DeployBadge({ platform }: { platform: string | null }) {
+export function DeployBadge({ platform, onClick }: { platform: string | null; onClick?: () => void }) {
   if (!platform) return null;
   const cfg = DEPLOY_CONFIG[platform];
-  if (!cfg) return (
-    <Badge variant="gray" className="text-[11px] font-medium">
+  const clickProps = makeClickProps(onClick);
+  if (!cfg) return <Badge variant="gray" {...clickProps}>{platform}</Badge>;
+  const Icon = cfg.icon;
+  return (
+    <Badge variant={cfg.variant} {...clickProps}>
+      <Icon className="h-2.5 w-2.5" />
       {platform}
     </Badge>
   );
+}
+
+export function HostBadge({ host, onClick }: { host: string | null; onClick?: () => void }) {
+  if (!host) return null;
+  const cfg = HOST_CONFIG[host];
+  const clickProps = makeClickProps(onClick);
+  if (!cfg) return <Badge variant="gray" {...clickProps}>{host}</Badge>;
   const Icon = cfg.icon;
   return (
-    <Badge variant={cfg.variant} className="gap-1 text-[11px] font-medium">
+    <Badge variant={cfg.variant} {...clickProps}>
       <Icon className="h-2.5 w-2.5" />
-      {platform}
+      {host}
     </Badge>
   );
 }

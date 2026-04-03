@@ -77,6 +77,8 @@ interface Props {
   project: Project | null;
   allProjects: Project[];
   onBack: () => void;
+  /** Hides the back button and sidebar trigger when embedded inside another page */
+  embedded?: boolean;
 }
 
 function relativeDate(iso: string | null): string {
@@ -237,7 +239,7 @@ const columns: ColumnDef<Task>[] = [
   },
 ];
 
-export default function TaskTable({ project, allProjects, onBack }: Props) {
+export default function TaskTable({ project, allProjects, onBack, embedded = false }: Props) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -438,11 +440,13 @@ export default function TaskTable({ project, allProjects, onBack }: Props) {
     <div className="flex h-full min-h-0 flex-col">
       {/* Toolbar (aligned with project table: plus → search) */}
       <div className="flex items-center gap-1">
-        <SidebarTrigger className="-ml-1" />
-        <Button variant="ghost" size="sm" onClick={onBack} className="gap-1.5 h-7 shrink-0">
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Projects
-        </Button>
+        {!embedded && <SidebarTrigger className="-ml-1" />}
+        {!embedded && (
+          <Button variant="ghost" size="sm" onClick={onBack} className="gap-1.5 h-7 shrink-0">
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Projects
+          </Button>
+        )}
         <Button
           size="icon"
           className="h-7 w-7 shrink-0"

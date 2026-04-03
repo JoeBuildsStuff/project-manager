@@ -50,7 +50,7 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Project, TaskCount, SavedView } from "../types";
 import { Badge } from "@/components/ui/badge";
-import { CategoryBadge, DeployBadge, StageBadge, StatusBadge } from "./StatusBadge";
+import { CategoryBadge, DeployBadge, HostBadge, StageBadge, StatusBadge } from "./StatusBadge";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import Toolbar from "./Toolbar";
 import ActiveFilters from "./ActiveFilters";
@@ -59,6 +59,7 @@ import ActiveFilters from "./ActiveFilters";
 interface TableMeta {
   taskCounts: Map<string, TaskCount>;
   onOpenTasks: (p: Project) => void;
+  onFilterByValue: (columnId: string, value: string) => void;
 }
 
 interface Props {
@@ -178,7 +179,11 @@ const columns: ColumnDef<Project>[] = [
         icon={<Kanban className={iconProps} strokeWidth={1.5} />}
       />
     ),
-    cell: ({ getValue }) => <CategoryBadge category={getValue() as string | null} />,
+    cell: ({ getValue, table: t }) => {
+      const v = getValue() as string | null;
+      const meta = t.options.meta as TableMeta | undefined;
+      return <CategoryBadge category={v} onClick={v && meta ? () => meta.onFilterByValue("category", v) : undefined} />;
+    },
   },
   {
     accessorKey: "status",
@@ -192,7 +197,11 @@ const columns: ColumnDef<Project>[] = [
         icon={<Activity className={iconProps} strokeWidth={1.5} />}
       />
     ),
-    cell: ({ getValue }) => <StatusBadge status={getValue() as string | null} />,
+    cell: ({ getValue, table: t }) => {
+      const v = getValue() as string | null;
+      const meta = t.options.meta as TableMeta | undefined;
+      return <StatusBadge status={v} onClick={v && meta ? () => meta.onFilterByValue("status", v) : undefined} />;
+    },
   },
   {
     accessorKey: "stage",
@@ -206,7 +215,11 @@ const columns: ColumnDef<Project>[] = [
         icon={<Milestone className={iconProps} strokeWidth={1.5} />}
       />
     ),
-    cell: ({ getValue }) => <StageBadge stage={getValue() as string | null} />,
+    cell: ({ getValue, table: t }) => {
+      const v = getValue() as string | null;
+      const meta = t.options.meta as TableMeta | undefined;
+      return <StageBadge stage={v} onClick={v && meta ? () => meta.onFilterByValue("stage", v) : undefined} />;
+    },
   },
   {
     accessorKey: "deploy_platform",
@@ -220,7 +233,11 @@ const columns: ColumnDef<Project>[] = [
         icon={<Rocket className={iconProps} strokeWidth={1.5} />}
       />
     ),
-    cell: ({ getValue }) => <DeployBadge platform={getValue() as string | null} />,
+    cell: ({ getValue, table: t }) => {
+      const v = getValue() as string | null;
+      const meta = t.options.meta as TableMeta | undefined;
+      return <DeployBadge platform={v} onClick={v && meta ? () => meta.onFilterByValue("deploy_platform", v) : undefined} />;
+    },
   },
   {
     accessorKey: "host",
@@ -234,11 +251,10 @@ const columns: ColumnDef<Project>[] = [
         icon={<GitBranch className={iconProps} strokeWidth={1.5} />}
       />
     ),
-    cell: ({ getValue }) => {
+    cell: ({ getValue, table: t }) => {
       const v = getValue() as string | null;
-      return v ? (
-        <span className="text-xs text-muted-foreground capitalize">{v}</span>
-      ) : null;
+      const meta = t.options.meta as TableMeta | undefined;
+      return <HostBadge host={v} onClick={v && meta ? () => meta.onFilterByValue("host", v) : undefined} />;
     },
   },
   {
@@ -440,6 +456,18 @@ export default function ProjectTable({
     loadViews();
   }, [activeView, sorting, columnFilters, columnVisibility, loadViews]);
 
+  const handleFilterByValue = useCallback((columnId: string, value: string) => {
+    setColumnFilters((prev) => {
+      const existing = prev.find((f) => f.id === columnId);
+      if (existing) {
+        const vals = existing.value as string[];
+        if (vals.includes(value)) return prev; // already filtered
+        return prev.map((f) => f.id === columnId ? { ...f, value: [...vals, value] } : f);
+      }
+      return [...prev, { id: columnId, value: [value] }];
+    });
+  }, []);
+
   const table = useReactTable({
     data: projects,
     columns,
@@ -455,7 +483,7 @@ export default function ProjectTable({
     getFacetedRowModel: facetedRowModel,
     getFacetedUniqueValues: facetedUniqueValues,
     enableRowSelection: true,
-    meta: { taskCounts, onOpenTasks } as TableMeta,
+    meta: { taskCounts, onOpenTasks, onFilterByValue: handleFilterByValue } as TableMeta,
   });
 
   const selectedKeys = Object.keys(rowSelection).filter((k) => rowSelection[k]);
