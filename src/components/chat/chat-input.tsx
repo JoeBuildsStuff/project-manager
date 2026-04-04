@@ -28,6 +28,7 @@ import { X } from "lucide-react";
 import { ArrowUp } from "lucide-react";
 import { Paperclip } from "lucide-react";
 import { LowMediumHighIcon } from "@/components/icons/low-medium-high";
+import { ANTHROPIC_MODEL_OPTIONS } from "@/lib/model-options";
 
 import Spinner from "@/components/ui/spinner";
 
@@ -40,21 +41,7 @@ export interface Attachment {
 }
 
 const MODEL_OPTIONS = [
-  {
-    value: "claude-haiku-4-5",
-    label: "Haiku 4.5",
-    menuLabel: "Haiku 4.5 ($1 / $5)",
-  },
-  {
-    value: "claude-sonnet-4-6",
-    label: "Sonnet 4.6",
-    menuLabel: "Sonnet 4.6 ($3 / $15)",
-  },
-  {
-    value: "claude-opus-4-6",
-    label: "Opus 4.6",
-    menuLabel: "Opus 4.6 ($5 / $25)",
-  },
+  ...ANTHROPIC_MODEL_OPTIONS,
   {
     value: "gpt-oss-120b",
     label: "GPT-OSS-120B",

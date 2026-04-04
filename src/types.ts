@@ -43,6 +43,100 @@ export interface Task {
   completed_at: string | null;
 }
 
+export type ClaudeTaskRunStatus =
+  | "idle"
+  | "starting"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface ClaudeRunStartedPayload {
+  run_id: string;
+  task_id: number;
+  model: string | null;
+  cwd: string;
+  pid: number;
+  started_at: number;
+}
+
+export interface ClaudeRunEventPayload {
+  run_id: string;
+  seq: number;
+  ts: number;
+  kind: string;
+  text: string | null;
+  raw_type: string | null;
+  raw_subtype: string | null;
+  data?: unknown;
+}
+
+export interface ClaudeRunCompletedPayload {
+  run_id: string;
+  task_id: number;
+  exit_code: number | null;
+  status: Exclude<ClaudeTaskRunStatus, "idle" | "starting" | "running">;
+  finished_at: number;
+  final_text: string | null;
+  usage?: unknown;
+}
+
+export interface ClaudeRunErrorPayload {
+  run_id: string | null;
+  task_id: number | null;
+  stage: "preflight" | "spawn" | "stream" | "cancel" | string;
+  message: string;
+}
+
+export interface ClaudeTaskRunSnapshot {
+  run_id: string;
+  task_id: number;
+  model: string | null;
+  status: Exclude<ClaudeTaskRunStatus, "idle">;
+  pid: number | null;
+  cwd: string;
+  started_at: number;
+  finished_at: number | null;
+  exit_code: number | null;
+}
+
+export interface ClaudeSessionRow {
+  run_id: string;
+  task_id: number;
+  model: string | null;
+  status: string;
+  started_at: number;
+  finished_at: number | null;
+  exit_code: number | null;
+  final_text: string | null;
+  usage_json: string | null;
+}
+
+export interface ClaudeEventRow {
+  id: number;
+  run_id: string;
+  seq: number;
+  ts: number;
+  kind: string;
+  raw_type: string | null;
+  raw_subtype: string | null;
+  text: string | null;
+}
+
+export interface ClaudeResultRow {
+  run_id: string;
+  result_text: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  cost_usd: number | null;
+  duration_ms: number | null;
+  num_turns: number | null;
+  stop_reason: string | null;
+}
+
 export interface TaskCount {
   folder_key: string;
   open_count: number;

@@ -5,7 +5,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProjectDetailContent } from "./ProjectDetailContent";
 import { CategoryBadge, HostBadge, StatusBadge, StageBadge, DeployBadge } from "./StatusBadge";
 import TaskTable from "./TaskTable";
-import type { Project } from "../types";
+import type { Project, Task } from "../types";
 
 interface Props {
   project: Project;
@@ -14,6 +14,7 @@ interface Props {
   onFieldChange: (folder_key: string, field: string, value: string | null) => Promise<void>;
   onRename: (folder_key: string, nextName: string) => Promise<void>;
   onDelete: (folder_key: string) => Promise<void>;
+  onOpenTask: (task: Task) => void;
 }
 
 type Tab = "details" | "tasks";
@@ -25,6 +26,7 @@ export default function ProjectFullPage({
   onFieldChange,
   onRename,
   onDelete,
+  onOpenTask,
 }: Props) {
   const [tab, setTab] = useState<Tab>("details");
 
@@ -81,6 +83,7 @@ export default function ProjectFullPage({
             project={p}
             allProjects={allProjects}
             onBack={() => setTab("details")}
+            onOpenTask={onOpenTask}
             embedded
           />
         </div>

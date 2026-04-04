@@ -68,7 +68,6 @@ import type { Task, Project } from "@/types";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import ActiveFilters from "./ActiveFilters";
 import SavedViewPicker from "./SavedViewPicker";
-import TaskDetail from "./TaskDetail";
 import { TaskKindBadge, TaskPriorityBadge, TaskStatusBadge } from "./task-badges";
 import type { SavedView } from "@/types";
 
@@ -77,6 +76,7 @@ interface Props {
   project: Project | null;
   allProjects: Project[];
   onBack: () => void;
+  onOpenTask: (task: Task) => void;
   /** Hides the back button and sidebar trigger when embedded inside another page */
   embedded?: boolean;
 }
@@ -239,16 +239,13 @@ const columns: ColumnDef<Task>[] = [
   },
 ];
 
-export default function TaskTable({ project, allProjects, onBack, embedded = false }: Props) {
+export default function TaskTable({ project, allProjects, onBack, onOpenTask, embedded = false }: Props) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
-
-  const [sheetTask, setSheetTask] = useState<Task | null>(null);
-  const [sheetOpen, setSheetOpen] = useState(false);
 
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [singleDeleteOpen, setSingleDeleteOpen] = useState(false);
@@ -395,14 +392,9 @@ export default function TaskTable({ project, allProjects, onBack, embedded = fal
       ? filteredTasks.find((t) => String(t.id) === selectedKeys[0]) ?? null
       : null;
 
-  const openTaskSheet = (task: Task) => {
-    setSheetTask(task);
-    setSheetOpen(true);
-  };
-
   const handleEditSelection = () => {
     if (!selectedOneTask) return;
-    openTaskSheet(selectedOneTask);
+    onOpenTask(selectedOneTask);
   };
 
   const deleteTasksByIds = async (ids: number[]) => {
@@ -413,10 +405,6 @@ export default function TaskTable({ project, allProjects, onBack, embedded = fal
       setRowSelection({});
       setBulkDeleteOpen(false);
       setSingleDeleteOpen(false);
-      if (sheetTask && ids.includes(sheetTask.id)) {
-        setSheetOpen(false);
-        setSheetTask(null);
-      }
       await loadTasks();
     } catch (e) {
       setDeleteError(String(e));
@@ -606,11 +594,8 @@ export default function TaskTable({ project, allProjects, onBack, embedded = fal
                   <TableRow
                     key={row.id}
                     data-state={row.getIsSelected() ? "selected" : undefined}
-                    className={cn(
-                      "cursor-pointer",
-                      sheetTask?.id === task.id && sheetOpen && "bg-accent/20",
-                    )}
-                    onClick={() => openTaskSheet(task)}
+                    className="cursor-pointer"
+                    onClick={() => onOpenTask(task)}
                   >
                     {row.getVisibleCells().map((cell) => (
                       <TableCell
@@ -746,23 +731,6 @@ export default function TaskTable({ project, allProjects, onBack, embedded = fal
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      <TaskDetail
-        task={sheetTask}
-        open={sheetOpen}
-        onOpenChange={(open) => {
-          setSheetOpen(open);
-          if (!open) setSheetTask(null);
-        }}
-        onTaskSaved={async (updated) => {
-          setSheetTask(updated);
-          await loadTasks();
-        }}
-        onTaskDeleted={async () => {
-          setRowSelection({});
-          await loadTasks();
-        }}
-      />
 
       <Dialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
         <DialogContent className="sm:max-w-[420px]">

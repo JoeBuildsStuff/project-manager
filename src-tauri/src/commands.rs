@@ -1,13 +1,18 @@
 use crate::config::{self, AppConfig};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Mutex, RwLock};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
 // ---------------------------------------------------------------------------
@@ -61,6 +66,92 @@ impl UpdateState {
             pending: Mutex::new(None),
         }
     }
+}
+
+pub struct ClaudeRunState {
+    runs: Mutex<HashMap<String, Arc<Mutex<ClaudeRunEntry>>>>,
+}
+
+impl ClaudeRunState {
+    pub fn new() -> Self {
+        Self {
+            runs: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClaudeTaskRunStatus {
+    Starting,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ClaudeTaskRunSnapshot {
+    pub run_id: String,
+    pub task_id: i64,
+    pub model: Option<String>,
+    pub status: ClaudeTaskRunStatus,
+    pub pid: Option<u32>,
+    pub cwd: String,
+    pub started_at: u64,
+    pub finished_at: Option<u64>,
+    pub exit_code: Option<i32>,
+}
+
+struct ClaudeRunEntry {
+    snapshot: ClaudeTaskRunSnapshot,
+    child: Option<Arc<Mutex<Child>>>,
+    cancelled: bool,
+    seq: u64,
+    final_text: String,
+    usage: Option<Value>,
+    db_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeRunStartedPayload {
+    pub run_id: String,
+    pub task_id: i64,
+    pub model: Option<String>,
+    pub cwd: String,
+    pub pid: u32,
+    pub started_at: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeRunEventPayload {
+    pub run_id: String,
+    pub seq: u64,
+    pub ts: u64,
+    pub kind: String,
+    pub text: Option<String>,
+    pub raw_type: Option<String>,
+    pub raw_subtype: Option<String>,
+    pub data: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeRunCompletedPayload {
+    pub run_id: String,
+    pub task_id: i64,
+    pub exit_code: Option<i32>,
+    pub status: ClaudeTaskRunStatus,
+    pub finished_at: u64,
+    pub final_text: Option<String>,
+    pub usage: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeRunErrorPayload {
+    pub run_id: Option<String>,
+    pub task_id: Option<i64>,
+    pub stage: String,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -122,6 +213,59 @@ fn workspace(state: &WorkspaceState) -> Result<PathBuf, String> {
 
 fn db_path(state: &WorkspaceState) -> Result<PathBuf, String> {
     Ok(workspace(state)?.join("project-metadata.sqlite"))
+}
+
+fn unix_ms_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn next_run_id(task_id: i64) -> String {
+    format!("claude-task-{task_id}-{}", unix_ms_now())
+}
+
+fn model_token_pricing_usd_per_million(model: &str) -> Option<(f64, f64)> {
+    let normalized = model.trim();
+    if normalized.starts_with("claude-haiku-4-5") {
+        return Some((1.0, 5.0));
+    }
+    if normalized.starts_with("claude-sonnet-4-6") {
+        return Some((3.0, 15.0));
+    }
+    if normalized.starts_with("claude-opus-4-6") {
+        return Some((5.0, 25.0));
+    }
+    None
+}
+
+fn emit_claude_run_error(
+    app: &AppHandle,
+    run_id: Option<String>,
+    task_id: Option<i64>,
+    stage: &str,
+    message: impl Into<String>,
+) {
+    let payload = ClaudeRunErrorPayload {
+        run_id,
+        task_id,
+        stage: stage.into(),
+        message: message.into(),
+    };
+    let _ = app.emit("claude-run:error", &payload);
+}
+
+fn clone_run_entry(
+    runs: &tauri::State<'_, ClaudeRunState>,
+    run_id: &str,
+) -> Result<Arc<Mutex<ClaudeRunEntry>>, String> {
+    runs.runs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(run_id)
+        .cloned()
+        .ok_or_else(|| "Claude run not found".into())
 }
 
 fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
@@ -226,6 +370,79 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
         "ALTER TABLE notes_documents ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0",
         [],
     );
+
+    // -----------------------------------------------------------------------
+    // Claude task-run persistence tables
+    // -----------------------------------------------------------------------
+
+    // Enable WAL mode for better concurrent read/write from spawned threads
+    let _ = conn.execute("PRAGMA journal_mode=WAL", []);
+
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS claude_sessions (
+            run_id      TEXT PRIMARY KEY,
+            task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            model       TEXT,
+            prompt      TEXT NOT NULL,
+            cwd         TEXT NOT NULL,
+            pid         INTEGER,
+            status      TEXT NOT NULL DEFAULT 'starting',
+            exit_code   INTEGER,
+            started_at  INTEGER NOT NULL,
+            finished_at INTEGER,
+            final_text  TEXT,
+            usage_json  TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS claude_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id      TEXT NOT NULL REFERENCES claude_sessions(run_id) ON DELETE CASCADE,
+            seq         INTEGER NOT NULL,
+            ts          INTEGER NOT NULL,
+            kind        TEXT NOT NULL,
+            raw_type    TEXT,
+            raw_subtype TEXT,
+            text        TEXT,
+            raw_json    TEXT,
+            UNIQUE(run_id, seq)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_claude_events_run_seq
+            ON claude_events(run_id, seq);
+
+        CREATE INDEX IF NOT EXISTS idx_claude_events_kind
+            ON claude_events(kind);
+
+        CREATE TABLE IF NOT EXISTS claude_results (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id         TEXT NOT NULL REFERENCES claude_sessions(run_id) ON DELETE CASCADE,
+            result_text    TEXT,
+            model          TEXT,
+            input_tokens   INTEGER,
+            output_tokens  INTEGER,
+            cache_creation_input_tokens INTEGER,
+            cache_read_input_tokens     INTEGER,
+            cost_usd       REAL,
+            duration_ms    INTEGER,
+            num_turns      INTEGER,
+            stop_reason    TEXT,
+            usage_json     TEXT,
+            ts             INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS claude_tool_calls (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id          TEXT NOT NULL REFERENCES claude_sessions(run_id) ON DELETE CASCADE,
+            seq             INTEGER NOT NULL,
+            tool_name       TEXT,
+            tool_input_json TEXT,
+            ts              INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_claude_tool_calls_run
+            ON claude_tool_calls(run_id);",
+    )
+    .map_err(|e| e.to_string())?;
 
     Ok(conn)
 }
@@ -2761,6 +2978,19 @@ fn map_task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     })
 }
 
+fn get_task_by_id(conn: &Connection, id: i64) -> Result<Task, String> {
+    conn.query_row(
+        "SELECT t.id, t.folder_key, m.folder_name, t.kind, t.title, t.description, t.status, t.priority,
+                t.created_at, t.updated_at, t.completed_at
+         FROM tasks t
+         LEFT JOIN project_metadata m ON m.folder_key = t.folder_key
+         WHERE t.id = ?1",
+        [id],
+        map_task_row,
+    )
+    .map_err(|e| e.to_string())
+}
+
 const TASK_LIST_ORDER: &str = "
              ORDER BY
                 CASE t.status
@@ -2805,6 +3035,12 @@ pub fn get_tasks(
         tasks.push(row.map_err(|e| e.to_string())?);
     }
     Ok(tasks)
+}
+
+#[tauri::command]
+pub fn get_task(id: i64, state: tauri::State<'_, WorkspaceState>) -> Result<Task, String> {
+    let conn = open_db(&state)?;
+    get_task_by_id(&conn, id)
 }
 
 #[tauri::command]
@@ -2919,6 +3155,937 @@ pub fn delete_task(id: i64, state: tauri::State<'_, WorkspaceState>) -> Result<(
     conn.execute("DELETE FROM tasks WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn build_claude_task_prompt(task: &Task) -> String {
+    let mut prompt = format!(
+        "Implement this task in the current local repository.\n\nTask title: {}\nTask kind: {}\nTask status: {}\nTask priority: {}\n",
+        task.title,
+        task.kind,
+        task.status,
+        task.priority.clone().unwrap_or_else(|| "medium".into())
+    );
+
+    if let Some(description) = task.description.as_ref().filter(|value| !value.trim().is_empty()) {
+        prompt.push_str(&format!("\nTask description:\n{}\n", description.trim()));
+    }
+
+    prompt.push_str(
+        "\nRequirements:\n- Work only in the current project directory.\n- Inspect the codebase first, then implement the task.\n- Make the necessary file changes locally.\n- Run relevant checks or tests if feasible.\n- At the end, summarize what changed, list the files you edited, and note any tests or checks you ran.\n",
+    );
+
+    prompt
+}
+
+fn normalize_claude_event(value: &Value) -> (String, Option<String>, Option<String>, Option<String>) {
+    let raw_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let raw_subtype = value
+        .get("subtype")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+
+    if raw_type.as_deref() == Some("stream_event") {
+        if let Some(delta) = value.get("event").and_then(|event| event.get("delta")) {
+            if delta.get("type").and_then(Value::as_str) == Some("text_delta") {
+                let text = delta
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                return ("assistant-text".into(), text, raw_type, raw_subtype);
+            }
+        }
+
+        if let Some(event_type) = value
+            .get("event")
+            .and_then(|event| event.get("type"))
+            .and_then(Value::as_str)
+        {
+            return (
+                if event_type.contains("tool") {
+                    "tool".into()
+                } else {
+                    "activity".into()
+                },
+                Some(event_type.to_string()),
+                raw_type,
+                raw_subtype,
+            );
+        }
+    }
+
+    if raw_type.as_deref() == Some("system") && raw_subtype.as_deref() == Some("api_retry") {
+        let attempt = value
+            .get("attempt")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let max_retries = value
+            .get("max_retries")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let retry_delay_ms = value
+            .get("retry_delay_ms")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        return (
+            "retry".into(),
+            Some(format!(
+                "Retrying API request ({attempt}/{max_retries}) in {retry_delay_ms}ms"
+            )),
+            raw_type,
+            raw_subtype,
+        );
+    }
+
+    if raw_type.as_deref() == Some("result") {
+        let text = value
+            .get("result")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        return ("result".into(), text, raw_type, raw_subtype);
+    }
+
+    let fallback_text = value
+        .get("message")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("result").and_then(Value::as_str))
+        .or_else(|| value.get("subtype").and_then(Value::as_str))
+        .or_else(|| value.get("type").and_then(Value::as_str))
+        .map(ToOwned::to_owned);
+
+    ("activity".into(), fallback_text, raw_type, raw_subtype)
+}
+
+fn emit_claude_run_event(
+    app: &AppHandle,
+    entry: &Arc<Mutex<ClaudeRunEntry>>,
+    run_id: &str,
+    kind: String,
+    text: Option<String>,
+    raw_type: Option<String>,
+    raw_subtype: Option<String>,
+    data: Option<Value>,
+) {
+    let mut guard = match entry.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+    guard.seq += 1;
+    let payload = ClaudeRunEventPayload {
+        run_id: run_id.to_string(),
+        seq: guard.seq,
+        ts: unix_ms_now(),
+        kind,
+        text,
+        raw_type,
+        raw_subtype,
+        data,
+    };
+    let _ = app.emit("claude-run:event", &payload);
+}
+
+fn persist_event_to_db(
+    conn: &Connection,
+    run_id: &str,
+    seq: u64,
+    ts: u64,
+    kind: &str,
+    raw_type: Option<&str>,
+    raw_subtype: Option<&str>,
+    text: Option<&str>,
+    raw_json: Option<&str>,
+) {
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO claude_events (run_id, seq, ts, kind, raw_type, raw_subtype, text, raw_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![run_id, seq, ts, kind, raw_type, raw_subtype, text, raw_json],
+    );
+}
+
+fn persist_tool_call_to_db(conn: &Connection, run_id: &str, seq: u64, value: &Value, ts: u64) {
+    // Try to extract tool name from various event shapes
+    let tool_name = value
+        .get("event")
+        .and_then(|e| e.get("name"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .get("event")
+                .and_then(|e| e.get("type"))
+                .and_then(Value::as_str)
+        });
+
+    let tool_input = value
+        .get("event")
+        .and_then(|e| e.get("input"))
+        .map(|v| v.to_string());
+
+    let _ = conn.execute(
+        "INSERT OR IGNORE INTO claude_tool_calls (run_id, seq, tool_name, tool_input_json, ts)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![run_id, seq, tool_name, tool_input, ts],
+    );
+}
+
+fn spawn_claude_stream_threads(
+    app: AppHandle,
+    run_id: String,
+    entry: Arc<Mutex<ClaudeRunEntry>>,
+    stdout: std::process::ChildStdout,
+    stderr: std::process::ChildStderr,
+    db_path: Option<PathBuf>,
+) {
+    let stdout_app = app.clone();
+    let stdout_run_id = run_id.clone();
+    let stdout_entry = entry.clone();
+    let stdout_db_path = db_path.clone();
+    thread::spawn(move || {
+        // Open a thread-local DB connection for persisting events
+        let db_conn = stdout_db_path.and_then(|p| Connection::open(&p).ok());
+
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else {
+                emit_claude_run_error(
+                    &stdout_app,
+                    Some(stdout_run_id.clone()),
+                    stdout_entry.lock().ok().map(|guard| guard.snapshot.task_id),
+                    "stream",
+                    "Failed reading Claude stdout",
+                );
+                break;
+            };
+
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            match serde_json::from_str::<Value>(trimmed) {
+                Ok(value) => {
+                    let (kind, text, raw_type, raw_subtype) = normalize_claude_event(&value);
+                    let seq;
+                    {
+                        if let Ok(mut guard) = stdout_entry.lock() {
+                            if kind == "assistant-text" {
+                                if let Some(ref chunk) = text {
+                                    guard.final_text.push_str(chunk);
+                                }
+                            } else if kind == "result" {
+                                if let Some(ref result_text) = text {
+                                    guard.final_text = result_text.clone();
+                                }
+                                guard.usage = value.get("usage").cloned();
+                            }
+                            guard.seq += 1;
+                            seq = guard.seq;
+                        } else {
+                            seq = 0;
+                        }
+                    }
+
+                    // Persist to SQLite
+                    if let Some(ref conn) = db_conn {
+                        let ts = unix_ms_now();
+                        persist_event_to_db(
+                            conn,
+                            &stdout_run_id,
+                            seq,
+                            ts,
+                            &kind,
+                            raw_type.as_deref(),
+                            raw_subtype.as_deref(),
+                            text.as_deref(),
+                            Some(trimmed),
+                        );
+                        if kind == "tool" {
+                            persist_tool_call_to_db(conn, &stdout_run_id, seq, &value, ts);
+                        }
+                    }
+
+                    // Emit to frontend (seq already incremented above, re-emit via helper)
+                    let payload = ClaudeRunEventPayload {
+                        run_id: stdout_run_id.clone(),
+                        seq,
+                        ts: unix_ms_now(),
+                        kind,
+                        text,
+                        raw_type,
+                        raw_subtype,
+                        data: Some(value),
+                    };
+                    let _ = stdout_app.emit("claude-run:event", &payload);
+                }
+                Err(_) => {
+                    emit_claude_run_event(
+                        &stdout_app,
+                        &stdout_entry,
+                        &stdout_run_id,
+                        "stdout".into(),
+                        Some(trimmed.to_string()),
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            }
+        }
+    });
+
+    let stderr_app = app;
+    let stderr_db_path = db_path;
+    thread::spawn(move || {
+        let db_conn = stderr_db_path.and_then(|p| Connection::open(&p).ok());
+
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else {
+                emit_claude_run_error(
+                    &stderr_app,
+                    Some(run_id.clone()),
+                    entry.lock().ok().map(|guard| guard.snapshot.task_id),
+                    "stream",
+                    "Failed reading Claude stderr",
+                );
+                break;
+            };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            // Persist stderr events too
+            if let Some(ref conn) = db_conn {
+                let seq = entry.lock().map(|mut g| { g.seq += 1; g.seq }).unwrap_or(0);
+                persist_event_to_db(
+                    conn,
+                    &run_id,
+                    seq,
+                    unix_ms_now(),
+                    "stderr",
+                    None,
+                    None,
+                    Some(trimmed),
+                    None,
+                );
+            }
+
+            emit_claude_run_event(
+                &stderr_app,
+                &entry,
+                &run_id,
+                "stderr".into(),
+                Some(trimmed.to_string()),
+                None,
+                None,
+                None,
+            );
+        }
+    });
+}
+
+fn persist_session_completion(
+    db_path: &Path,
+    run_id: &str,
+    status: &str,
+    exit_code: Option<i32>,
+    finished_at: u64,
+    started_at: u64,
+    final_text: Option<&str>,
+    usage: Option<&Value>,
+) {
+    let Ok(conn) = Connection::open(db_path) else {
+        return;
+    };
+
+    let usage_json = usage.map(|v| v.to_string());
+
+    // Update the session row
+    let _ = conn.execute(
+        "UPDATE claude_sessions SET status = ?1, exit_code = ?2, finished_at = ?3, final_text = ?4, usage_json = ?5
+         WHERE run_id = ?6",
+        rusqlite::params![status, exit_code, finished_at, final_text, usage_json, run_id],
+    );
+
+    // Project into claude_results for analytics
+    let input_tokens = usage
+        .and_then(|u| u.get("input_tokens"))
+        .and_then(Value::as_i64);
+    let output_tokens = usage
+        .and_then(|u| u.get("output_tokens"))
+        .and_then(Value::as_i64);
+    let cache_creation = usage
+        .and_then(|u| u.get("cache_creation_input_tokens"))
+        .and_then(Value::as_i64);
+    let cache_read = usage
+        .and_then(|u| u.get("cache_read_input_tokens"))
+        .and_then(Value::as_i64);
+
+    // Try to get cost from the usage object if available, otherwise
+    // compute a fallback from token counts for the known Claude models
+    // exposed in the task runner UI.
+    let usage_cost_usd = usage
+        .and_then(|u| u.get("cost_usd"))
+        .and_then(Value::as_f64);
+
+    let duration_ms = finished_at.saturating_sub(started_at);
+
+    let model = usage
+        .and_then(|u| u.get("model"))
+        .and_then(Value::as_str);
+
+    let num_turns = usage
+        .and_then(|u| u.get("num_turns"))
+        .and_then(Value::as_i64);
+
+    let stop_reason = usage
+        .and_then(|u| u.get("stop_reason"))
+        .and_then(Value::as_str);
+
+    let cost_usd = usage_cost_usd.or_else(|| {
+        let model_name = model?;
+        let (input_rate, output_rate) = model_token_pricing_usd_per_million(model_name)?;
+        let input = input_tokens.unwrap_or(0) as f64;
+        let output = output_tokens.unwrap_or(0) as f64;
+        Some((input / 1_000_000.0) * input_rate + (output / 1_000_000.0) * output_rate)
+    });
+
+    let _ = conn.execute(
+        "INSERT INTO claude_results (run_id, result_text, model, input_tokens, output_tokens,
+            cache_creation_input_tokens, cache_read_input_tokens, cost_usd, duration_ms,
+            num_turns, stop_reason, usage_json, ts)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        rusqlite::params![
+            run_id, final_text, model, input_tokens, output_tokens,
+            cache_creation, cache_read, cost_usd, duration_ms,
+            num_turns, stop_reason, usage_json, finished_at,
+        ],
+    );
+}
+
+fn spawn_claude_wait_thread(
+    app: AppHandle,
+    run_id: String,
+    entry: Arc<Mutex<ClaudeRunEntry>>,
+) {
+    thread::spawn(move || loop {
+        let child_arc = {
+            let guard = match entry.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            guard.child.clone()
+        };
+
+        let Some(child_arc) = child_arc else {
+            return;
+        };
+
+        let maybe_status = {
+            let mut child = match child_arc.lock() {
+                Ok(child) => child,
+                Err(_) => return,
+            };
+            child.try_wait().ok().flatten()
+        };
+
+        if let Some(status) = maybe_status {
+            let payload = {
+                let mut guard = match entry.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => return,
+                };
+                guard.snapshot.finished_at = Some(unix_ms_now());
+                guard.snapshot.exit_code = status.code();
+                guard.snapshot.pid = None;
+                guard.snapshot.status = if guard.cancelled {
+                    ClaudeTaskRunStatus::Cancelled
+                } else if status.success() {
+                    ClaudeTaskRunStatus::Completed
+                } else {
+                    ClaudeTaskRunStatus::Failed
+                };
+                guard.child = None;
+
+                let final_text = if guard.final_text.trim().is_empty() {
+                    None
+                } else {
+                    Some(guard.final_text.clone())
+                };
+
+                // Persist to SQLite
+                if let Some(ref db_path) = guard.db_path {
+                    let status_str = match guard.snapshot.status {
+                        ClaudeTaskRunStatus::Completed => "completed",
+                        ClaudeTaskRunStatus::Failed => "failed",
+                        ClaudeTaskRunStatus::Cancelled => "cancelled",
+                        ClaudeTaskRunStatus::Starting => "starting",
+                        ClaudeTaskRunStatus::Running => "running",
+                    };
+                    persist_session_completion(
+                        db_path,
+                        &run_id,
+                        status_str,
+                        guard.snapshot.exit_code,
+                        guard.snapshot.finished_at.unwrap_or_else(unix_ms_now),
+                        guard.snapshot.started_at,
+                        final_text.as_deref(),
+                        guard.usage.as_ref(),
+                    );
+                }
+
+                ClaudeRunCompletedPayload {
+                    run_id: run_id.clone(),
+                    task_id: guard.snapshot.task_id,
+                    exit_code: guard.snapshot.exit_code,
+                    status: guard.snapshot.status.clone(),
+                    finished_at: guard.snapshot.finished_at.unwrap_or_else(unix_ms_now),
+                    final_text,
+                    usage: guard.usage.clone(),
+                }
+            };
+
+            let _ = app.emit("claude-run:completed", &payload);
+            return;
+        }
+
+        thread::sleep(Duration::from_millis(250));
+    });
+}
+
+#[tauri::command]
+pub async fn start_claude_task_run(
+    task_id: i64,
+    model: Option<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, WorkspaceState>,
+    runs: tauri::State<'_, ClaudeRunState>,
+) -> Result<ClaudeRunStartedPayload, String> {
+    // -----------------------------------------------------------------------
+    // Gather everything we need from State BEFORE the first .await so that
+    // non-Send types (rusqlite::Connection, tauri::State) never cross an
+    // await boundary.
+    // -----------------------------------------------------------------------
+    let task: Task;
+    let cwd: PathBuf;
+    let prompt: String;
+    let run_id: String;
+    let run_db_path: Option<PathBuf>;
+
+    // Normalize model: treat empty string as None (use CLI default)
+    let model = model.filter(|m| !m.trim().is_empty());
+
+    {
+        let conn = open_db(&state)?;
+        task = get_task_by_id(&conn, task_id)?;
+        cwd = workspace_path(&state, &task.folder_key)?;
+        run_db_path = db_path(&state).ok();
+
+        if !cwd.is_dir() {
+            let message = format!("Project folder does not exist: {}", cwd.display());
+            emit_claude_run_error(&app, None, Some(task_id), "preflight", &message);
+            return Err(message);
+        }
+
+        // Check for active runs (in-memory only — fast)
+        {
+            let runs_guard = runs.runs.lock().map_err(|e| e.to_string())?;
+            let active_runs = runs_guard.values().filter_map(|entry| entry.lock().ok());
+            for active in active_runs {
+                if matches!(
+                    active.snapshot.status,
+                    ClaudeTaskRunStatus::Starting | ClaudeTaskRunStatus::Running
+                ) {
+                    let message = if active.snapshot.task_id == task_id {
+                        "A Claude run is already active for this task".to_string()
+                    } else {
+                        "Only one Claude run can be active at a time".to_string()
+                    };
+                    emit_claude_run_error(&app, None, Some(task_id), "preflight", &message);
+                    return Err(message);
+                }
+            }
+        }
+
+        prompt = build_claude_task_prompt(&task);
+        run_id = next_run_id(task_id);
+        // conn is dropped here — no longer held across await
+    }
+
+    // -----------------------------------------------------------------------
+    // Preflight checks — run on a blocking thread so we don't freeze the UI.
+    // `claude --version` and `claude auth status` each spawn a Node.js process
+    // which can take 1-3 seconds; doing this on the main thread beach-balls.
+    // -----------------------------------------------------------------------
+    let preflight_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        Command::new("claude")
+            .arg("--version")
+            .output()
+            .map_err(|e| {
+                let message = format!("Claude CLI is not available on PATH: {e}");
+                emit_claude_run_error(&preflight_app, None, Some(task_id), "preflight", &message);
+                message
+            })?;
+
+        let auth_output = Command::new("claude")
+            .args(["auth", "status"])
+            .output()
+            .map_err(|e| {
+                let message = format!("Failed to check Claude auth status: {e}");
+                emit_claude_run_error(&preflight_app, None, Some(task_id), "preflight", &message);
+                message
+            })?;
+        if !auth_output.status.success() {
+            let stderr_text = String::from_utf8_lossy(&auth_output.stderr).trim().to_string();
+            let stdout_text = String::from_utf8_lossy(&auth_output.stdout).trim().to_string();
+            let detail = if !stderr_text.is_empty() { stderr_text } else { stdout_text };
+            let message = if detail.is_empty() {
+                "Claude CLI is not authenticated. Run `claude auth login` first.".to_string()
+            } else {
+                format!("Claude CLI is not authenticated: {detail}")
+            };
+            emit_claude_run_error(&preflight_app, None, Some(task_id), "preflight", &message);
+            return Err(message);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Preflight task panicked: {e}"))??;
+
+    // -----------------------------------------------------------------------
+    // Spawn the Claude CLI — also on a blocking thread since .spawn() can
+    // briefly block on slower machines while the OS sets up the child process.
+    // -----------------------------------------------------------------------
+    let spawn_cwd = cwd.clone();
+    let spawn_model = model.clone();
+    let spawn_run_id = run_id.clone();
+    let spawn_prompt = prompt.clone();
+    let spawn_app = app.clone();
+
+    let (child_proc, pid, child_stdout, child_stderr) =
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut cmd = Command::new("claude");
+            cmd.arg("-p")
+                .arg(&spawn_prompt)
+                .arg("--output-format")
+                .arg("stream-json")
+                .arg("--verbose")
+                .arg("--include-partial-messages");
+
+            if let Some(ref m) = spawn_model {
+                cmd.arg("--model").arg(m);
+            }
+
+            let mut child = cmd
+                .current_dir(&spawn_cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| {
+                    let message = format!("Failed to start Claude Code: {e}");
+                    emit_claude_run_error(
+                        &spawn_app,
+                        Some(spawn_run_id.clone()),
+                        Some(task_id),
+                        "spawn",
+                        &message,
+                    );
+                    message
+                })?;
+
+            let pid = child.id();
+            let stdout = child.stdout.take().ok_or_else(|| {
+                let message = "Failed to capture Claude stdout".to_string();
+                emit_claude_run_error(
+                    &spawn_app,
+                    Some(spawn_run_id.clone()),
+                    Some(task_id),
+                    "spawn",
+                    &message,
+                );
+                message
+            })?;
+            let stderr = child.stderr.take().ok_or_else(|| {
+                let message = "Failed to capture Claude stderr".to_string();
+                emit_claude_run_error(
+                    &spawn_app,
+                    Some(spawn_run_id.clone()),
+                    Some(task_id),
+                    "spawn",
+                    &message,
+                );
+                message
+            })?;
+
+            Ok::<_, String>((child, pid, stdout, stderr))
+        })
+        .await
+        .map_err(|e| format!("Spawn task panicked: {e}"))??;
+
+    // -----------------------------------------------------------------------
+    // Back on the async task — persist and wire up streaming.
+    // Open a fresh DB connection (previous one was dropped before await).
+    // -----------------------------------------------------------------------
+    let started_at = unix_ms_now();
+
+    // Persist session row to SQLite
+    if let Some(ref db) = run_db_path {
+        if let Ok(conn) = Connection::open(db) {
+            let _ = conn.execute(
+                "INSERT INTO claude_sessions (run_id, task_id, model, prompt, cwd, pid, status, started_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', ?7)",
+                rusqlite::params![
+                    run_id,
+                    task_id,
+                    model,
+                    prompt,
+                    cwd.to_string_lossy().to_string(),
+                    pid,
+                    started_at,
+                ],
+            );
+        }
+    }
+
+    let child = Arc::new(Mutex::new(child_proc));
+    let entry = Arc::new(Mutex::new(ClaudeRunEntry {
+        snapshot: ClaudeTaskRunSnapshot {
+            run_id: run_id.clone(),
+            task_id,
+            model: model.clone(),
+            status: ClaudeTaskRunStatus::Running,
+            pid: Some(pid),
+            cwd: cwd.to_string_lossy().to_string(),
+            started_at,
+            finished_at: None,
+            exit_code: None,
+        },
+        child: Some(child),
+        cancelled: false,
+        seq: 0,
+        final_text: String::new(),
+        usage: None,
+        db_path: run_db_path.clone(),
+    }));
+
+    runs.runs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(run_id.clone(), entry.clone());
+
+    let payload = ClaudeRunStartedPayload {
+        run_id: run_id.clone(),
+        task_id,
+        model: model.clone(),
+        cwd: cwd.to_string_lossy().to_string(),
+        pid,
+        started_at,
+    };
+    let _ = app.emit("claude-run:started", &payload);
+
+    spawn_claude_stream_threads(app.clone(), run_id.clone(), entry.clone(), child_stdout, child_stderr, run_db_path);
+    spawn_claude_wait_thread(app, run_id, entry);
+
+    Ok(payload)
+}
+
+#[derive(Debug, Serialize)]
+pub struct CancelClaudeTaskRunResponse {
+    pub ok: bool,
+}
+
+#[tauri::command]
+pub fn cancel_claude_task_run(
+    run_id: String,
+    app: tauri::AppHandle,
+    runs: tauri::State<'_, ClaudeRunState>,
+) -> Result<CancelClaudeTaskRunResponse, String> {
+    let entry = clone_run_entry(&runs, &run_id)?;
+    let child_arc = {
+        let mut guard = entry.lock().map_err(|e| e.to_string())?;
+        guard.cancelled = true;
+        guard.snapshot.status = ClaudeTaskRunStatus::Cancelled;
+        guard.child.clone()
+    };
+
+    let Some(child_arc) = child_arc else {
+        return Ok(CancelClaudeTaskRunResponse { ok: true });
+    };
+
+    let mut child = child_arc.lock().map_err(|e| e.to_string())?;
+    child.kill().map_err(|e| {
+        let message = format!("Failed to cancel Claude run: {e}");
+        let task_id = entry.lock().ok().map(|guard| guard.snapshot.task_id);
+        emit_claude_run_error(&app, Some(run_id.clone()), task_id, "cancel", &message);
+        message
+    })?;
+
+    Ok(CancelClaudeTaskRunResponse { ok: true })
+}
+
+#[tauri::command]
+pub fn get_claude_task_run_state(
+    run_id: String,
+    runs: tauri::State<'_, ClaudeRunState>,
+) -> Result<ClaudeTaskRunSnapshot, String> {
+    let entry = clone_run_entry(&runs, &run_id)?;
+    let guard = entry.lock().map_err(|e| e.to_string())?;
+    Ok(guard.snapshot.clone())
+}
+
+// ---------------------------------------------------------------------------
+// Claude run history queries (persisted in SQLite)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeSessionRow {
+    pub run_id: String,
+    pub task_id: i64,
+    pub model: Option<String>,
+    pub status: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub exit_code: Option<i32>,
+    pub final_text: Option<String>,
+    pub usage_json: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeEventRow {
+    pub id: i64,
+    pub run_id: String,
+    pub seq: i64,
+    pub ts: i64,
+    pub kind: String,
+    pub raw_type: Option<String>,
+    pub raw_subtype: Option<String>,
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeResultRow {
+    pub run_id: String,
+    pub result_text: Option<String>,
+    pub model: Option<String>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_creation_input_tokens: Option<i64>,
+    pub cache_read_input_tokens: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: Option<i64>,
+    pub num_turns: Option<i64>,
+    pub stop_reason: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_claude_sessions_for_task(
+    task_id: i64,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<ClaudeSessionRow>, String> {
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT run_id, task_id, model, status, started_at, finished_at, exit_code, final_text, usage_json
+             FROM claude_sessions
+             WHERE task_id = ?1
+             ORDER BY started_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([task_id], |row| {
+            Ok(ClaudeSessionRow {
+                run_id: row.get(0)?,
+                task_id: row.get(1)?,
+                model: row.get(2)?,
+                status: row.get(3)?,
+                started_at: row.get(4)?,
+                finished_at: row.get(5)?,
+                exit_code: row.get(6)?,
+                final_text: row.get(7)?,
+                usage_json: row.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(sessions)
+}
+
+#[tauri::command]
+pub fn get_claude_session_events(
+    run_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<ClaudeEventRow>, String> {
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, run_id, seq, ts, kind, raw_type, raw_subtype, text
+             FROM claude_events
+             WHERE run_id = ?1
+             ORDER BY seq ASC",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([&run_id], |row| {
+            Ok(ClaudeEventRow {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                seq: row.get(2)?,
+                ts: row.get(3)?,
+                kind: row.get(4)?,
+                raw_type: row.get(5)?,
+                raw_subtype: row.get(6)?,
+                text: row.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(events)
+}
+
+#[tauri::command]
+pub fn get_claude_session_result(
+    run_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Option<ClaudeResultRow>, String> {
+    let conn = open_db(&state)?;
+    conn.query_row(
+        "SELECT run_id, result_text, model, input_tokens, output_tokens,
+                cache_creation_input_tokens, cache_read_input_tokens,
+                cost_usd, duration_ms, num_turns, stop_reason
+         FROM claude_results
+         WHERE run_id = ?1
+         LIMIT 1",
+        [&run_id],
+        |row| {
+            Ok(ClaudeResultRow {
+                run_id: row.get(0)?,
+                result_text: row.get(1)?,
+                model: row.get(2)?,
+                input_tokens: row.get(3)?,
+                output_tokens: row.get(4)?,
+                cache_creation_input_tokens: row.get(5)?,
+                cache_read_input_tokens: row.get(6)?,
+                cost_usd: row.get(7)?,
+                duration_ms: row.get(8)?,
+                num_turns: row.get(9)?,
+                stop_reason: row.get(10)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------

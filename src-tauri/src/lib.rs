@@ -16,6 +16,7 @@ pub fn run() {
         .manage(WorkspaceState::new())
         .manage(UpdateState::new())
         .manage(TokenCache::new())
+        .manage(ClaudeRunState::new())
         .setup(|app| {
             // Build app menu with "Check for Updates..." item
             let check_updates =
@@ -145,9 +146,16 @@ pub fn run() {
             install_update,
             get_task_counts,
             get_tasks,
+            get_task,
             create_task,
             update_task,
             delete_task,
+            start_claude_task_run,
+            cancel_claude_task_run,
+            get_claude_task_run_state,
+            get_claude_sessions_for_task,
+            get_claude_session_events,
+            get_claude_session_result,
             list_notes_documents,
             get_notes_document_by_id,
             create_notes_document,

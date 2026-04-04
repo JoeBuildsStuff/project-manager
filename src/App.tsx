@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { toast } from "sonner";
 import { Download } from "lucide-react";
-import type { NotesDocument, NotesDocumentSummary, Project, TaskCount } from "./types";
+import type { NotesDocument, NotesDocumentSummary, Project, Task, TaskCount } from "./types";
 import AppSidebar from "./components/Sidebar";
 import ProjectTable from "./components/ProjectTable";
 import NewProjectDialog from "./components/NewProjectDialog";
@@ -14,6 +14,7 @@ import TaskTable from "./components/TaskTable";
 import Notes from "./components/Notes";
 import Terminal from "./components/Terminal";
 import ProjectFullPage from "./components/ProjectFullPage";
+import TaskFullPage from "./components/TaskFullPage";
 import { perfStart, perfEnd } from "./lib/perf";
 import { ChatProvider, ChatFooterBar, ChatPanel } from "@/components/chat";
 import { useChatStore } from "@/lib/chat/chat-store";
@@ -35,7 +36,7 @@ interface DiffStat {
   lines_removed: number | null;
 }
 
-type View = "projects" | "settings" | "tasks" | "notes" | "terminal" | "project-detail";
+type View = "projects" | "settings" | "tasks" | "notes" | "terminal" | "project-detail" | "task-detail";
 
 const NOTES_SELECTED_KEY = "pm-selected-note-id";
 
@@ -58,6 +59,8 @@ export default function App() {
   // Task view state
   const [taskProject, setTaskProject] = useState<Project | null>(null);
   const [fullPageProject, setFullPageProject] = useState<Project | null>(null);
+  const [fullPageTask, setFullPageTask] = useState<Task | null>(null);
+  const [taskDetailReturnView, setTaskDetailReturnView] = useState<"tasks" | "project-detail">("tasks");
   const [taskCounts, setTaskCounts] = useState<Map<string, TaskCount>>(new Map());
 
   const [notesList, setNotesList] = useState<NotesDocumentSummary[]>([]);
@@ -312,10 +315,31 @@ export default function App() {
     setView("tasks");
   };
 
+  const handleOpenTaskDetail = (task: Task, source: "tasks" | "project-detail") => {
+    setFullPageTask(task);
+    setTaskDetailReturnView(source);
+    if (source === "project-detail") {
+      const project = allProjects.find((candidate) => candidate.folder_key === task.folder_key) ?? null;
+      if (project) {
+        setFullPageProject(project);
+      }
+    }
+    setView("task-detail");
+  };
+
   const handleBackFromTasks = () => {
     setView("projects");
     setTaskProject(null);
     loadTaskCounts(); // Refresh counts when coming back
+  };
+
+  const handleBackFromTaskDetail = () => {
+    if (taskDetailReturnView === "project-detail" && fullPageProject) {
+      setView("project-detail");
+    } else {
+      setView("tasks");
+    }
+    setFullPageTask(null);
   };
 
   const handleJumpToProjects = () => {
@@ -432,6 +456,7 @@ export default function App() {
                   project={taskProject}
                   allProjects={allProjects}
                   onBack={handleBackFromTasks}
+                  onOpenTask={(task) => handleOpenTaskDetail(task, "tasks")}
                 />
               </div>
             ) : view === "notes" ? (
@@ -464,6 +489,37 @@ export default function App() {
                   onDelete={async (folderKey) => {
                     await invoke("delete_project_folder", { folderKey });
                     await load();
+                  }}
+                  onOpenTask={(task) => handleOpenTaskDetail(task, "project-detail")}
+                />
+              </div>
+            ) : view === "task-detail" && fullPageTask ? (
+              <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                <TaskFullPage
+                  task={fullPageTask}
+                  project={allProjects.find((project) => project.folder_key === fullPageTask.folder_key) ?? null}
+                  onBack={handleBackFromTaskDetail}
+                  onTaskSaved={async (updated) => {
+                    setFullPageTask(updated);
+                    await load();
+                    loadTaskCounts();
+                  }}
+                  onTaskDeleted={async () => {
+                    setFullPageTask(null);
+                    await load();
+                    loadTaskCounts();
+                  }}
+                  onRefreshData={async () => {
+                    await load();
+                    loadTaskCounts();
+                    if (fullPageTask) {
+                      try {
+                        const refreshed = await invoke<Task>("get_task", { id: fullPageTask.id });
+                        setFullPageTask(refreshed);
+                      } catch {
+                        // ignore refresh failures
+                      }
+                    }
                   }}
                 />
               </div>
