@@ -1,7 +1,7 @@
 import {
   Zap, Inbox, Archive, Kanban, BookOpen, Wrench, Globe, Server, Home,
   Lightbulb, Hammer, Target, TrendingUp, Layers, LayoutGrid, Expand, PauseCircle, TrendingDown, Skull, RotateCcw,
-  Cloud,
+  Cloud, CheckCircle2, XCircle, Clock, Ban,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 type BadgeVariant =
@@ -121,6 +121,43 @@ export function DeployBadge({ platform, onClick }: { platform: string | null; on
     <Badge variant={cfg.variant} {...clickProps}>
       <Icon className="h-2.5 w-2.5" />
       {platform}
+    </Badge>
+  );
+}
+
+const ACTIONS_CONFIG: Record<string, { variant: BadgeVariant; icon: React.ElementType; label: string }> = {
+  success:     { variant: "green",  icon: CheckCircle2, label: "passing"     },
+  failure:     { variant: "red",    icon: XCircle,      label: "failed"      },
+  timed_out:   { variant: "orange", icon: Clock,        label: "timed out"   },
+  in_progress: { variant: "blue",   icon: Clock,        label: "running"     },
+  queued:      { variant: "gray",   icon: Clock,        label: "queued"      },
+  waiting:     { variant: "gray",   icon: Clock,        label: "waiting"     },
+  cancelled:   { variant: "gray",   icon: Ban,          label: "cancelled"   },
+  skipped:     { variant: "gray",   icon: Ban,          label: "skipped"     },
+};
+
+export function ActionsBadge({
+  status,
+  runUrl,
+  onClick,
+}: {
+  status: string | null;
+  runUrl?: string | null;
+  onClick?: () => void;
+}) {
+  if (!status) return null;
+  const cfg = ACTIONS_CONFIG[status];
+  const Icon = cfg?.icon ?? Clock;
+  const label = cfg?.label ?? status;
+  const variant: BadgeVariant = cfg?.variant ?? "gray";
+
+  const handleClick = onClick ?? (runUrl ? () => {} : undefined);
+  const clickProps = makeClickProps(handleClick);
+
+  return (
+    <Badge variant={variant} {...clickProps}>
+      <Icon className="h-2.5 w-2.5" />
+      {label}
     </Badge>
   );
 }

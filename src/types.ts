@@ -18,6 +18,8 @@ export interface Project {
   vercel_team_slug: string | null;
   vercel_project_name: string | null;
   stage: string | null;
+  actions_status: string | null;
+  actions_run_url: string | null;
 }
 
 export type StatusFilter = "all" | "active" | "inbox" | "archived";

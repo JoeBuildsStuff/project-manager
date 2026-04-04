@@ -8,7 +8,6 @@ import {
   GitCommit,
   Pencil,
   Trash2,
-  AlertTriangle,
   Loader2,
   ChevronDown,
 } from "lucide-react";

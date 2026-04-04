@@ -172,6 +172,7 @@ pub fn run() {
             delete_secret,
             has_secret,
             update_github_repo_url,
+            refresh_actions_status,
             llm_request,
             get_table_views,
             save_table_view,

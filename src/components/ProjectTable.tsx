@@ -26,6 +26,7 @@ import {
   Trash2,
   ListTodo,
   Milestone,
+  Play,
 } from "lucide-react";
 import {
   Table,
@@ -50,7 +51,7 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Project, TaskCount, SavedView } from "../types";
 import { Badge } from "@/components/ui/badge";
-import { CategoryBadge, DeployBadge, HostBadge, StageBadge, StatusBadge } from "./StatusBadge";
+import { ActionsBadge, CategoryBadge, DeployBadge, HostBadge, StageBadge, StatusBadge } from "./StatusBadge";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import Toolbar from "./Toolbar";
 import ActiveFilters from "./ActiveFilters";
@@ -60,6 +61,7 @@ interface TableMeta {
   taskCounts: Map<string, TaskCount>;
   onOpenTasks: (p: Project) => void;
   onFilterByValue: (columnId: string, value: string) => void;
+  onOpenUrl: (url: string) => void;
 }
 
 interface Props {
@@ -378,6 +380,33 @@ const columns: ColumnDef<Project>[] = [
       return 0;
     },
   },
+  {
+    accessorKey: "actions_status",
+    enableSorting: true,
+    enableColumnFilter: true,
+    filterFn: arrIncludesFilter,
+    header: ({ column }) => (
+      <DataTableColumnHeader
+        column={column}
+        title="CI"
+        icon={<Play className={iconProps} strokeWidth={1.5} />}
+      />
+    ),
+    cell: ({ row: { original: p }, table: t }) => {
+      const meta = t.options.meta as TableMeta | undefined;
+      return (
+        <ActionsBadge
+          status={p.actions_status}
+          runUrl={p.actions_run_url}
+          onClick={
+            p.actions_run_url && meta
+              ? () => meta.onOpenUrl(p.actions_run_url as string)
+              : undefined
+          }
+        />
+      );
+    },
+  },
 ];
 
 export default function ProjectTable({
@@ -483,7 +512,7 @@ export default function ProjectTable({
     getFacetedRowModel: facetedRowModel,
     getFacetedUniqueValues: facetedUniqueValues,
     enableRowSelection: true,
-    meta: { taskCounts, onOpenTasks, onFilterByValue: handleFilterByValue } as TableMeta,
+    meta: { taskCounts, onOpenTasks, onFilterByValue: handleFilterByValue, onOpenUrl: (url: string) => invoke("open_url", { url }) } as TableMeta,
   });
 
   const selectedKeys = Object.keys(rowSelection).filter((k) => rowSelection[k]);
@@ -655,6 +684,7 @@ export default function ProjectTable({
                         header.column.id === "deploy_platform"  && "w-[100px]",
                         header.column.id === "host"             && "w-[90px]",
                         header.column.id === "tasks"            && "w-[80px]",
+                        header.column.id === "actions_status"   && "w-[95px]",
                       )}
                     >
                       {header.isPlaceholder

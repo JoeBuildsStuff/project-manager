@@ -18,7 +18,7 @@ export default function Terminal() {
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [cmdHistory, setCmdHistory] = useState<string[]>([]);
-  const [cmdHistoryIndex, setCmdHistoryIndex] = useState(-1);
+  const [_cmdHistoryIndex, setCmdHistoryIndex] = useState(-1);
   const [running, setRunning] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);

@@ -128,8 +128,10 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     let path = db_path(state)?;
     let conn = Connection::open(&path).map_err(|e| e.to_string())?;
     let _ = conn.execute("PRAGMA foreign_keys = ON", []);
-    // Idempotent migration – add stage column if missing
+    // Idempotent migrations – add columns if missing
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN stage TEXT", []);
+    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN actions_status TEXT", []);
+    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN actions_run_url TEXT", []);
 
     // Ensure tasks table exists (migration for existing databases)
     conn.execute_batch(
@@ -390,6 +392,8 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
         [],
     );
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN stage TEXT", []);
+    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN actions_status TEXT", []);
+    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN actions_run_url TEXT", []);
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS table_views (
@@ -438,6 +442,8 @@ pub struct Project {
     pub vercel_team_slug: Option<String>,
     pub vercel_project_name: Option<String>,
     pub stage: Option<String>,
+    pub actions_status: Option<String>,
+    pub actions_run_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1788,7 +1794,8 @@ pub fn get_projects(
                 commit_count, last_commit_date, days_since_last_commit,
                 deployment, production_url, deploy_platform,
                 vercel_team_slug, vercel_project_name,
-                lines_added, lines_removed, stage
+                lines_added, lines_removed, stage,
+                actions_status, actions_run_url
          FROM project_metadata
          {}
          ORDER BY folder_key",
@@ -1818,6 +1825,8 @@ pub fn get_projects(
                 vercel_team_slug: row.get(14)?,
                 vercel_project_name: row.get(15)?,
                 stage: row.get(18)?,
+                actions_status: row.get(19)?,
+                actions_run_url: row.get(20)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1875,7 +1884,8 @@ pub fn get_project(
             "SELECT folder_key, folder_name, description, status, category, repo, host, repo_owner,
                     commit_count, last_commit_date, days_since_last_commit,
                     deployment, production_url, deploy_platform,
-                    vercel_team_slug, vercel_project_name, stage
+                    vercel_team_slug, vercel_project_name, stage,
+                    actions_status, actions_run_url
              FROM project_metadata WHERE folder_key = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -1910,6 +1920,8 @@ pub fn get_project(
                 vercel_team_slug: row.get(14)?,
                 vercel_project_name: row.get(15)?,
                 stage: row.get(16)?,
+                actions_status: row.get(17)?,
+                actions_run_url: row.get(18)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -3205,6 +3217,215 @@ pub fn delete_table_view(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Actions status – fetch latest CI run conclusion from GitHub / Gitea
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct ActionsStat {
+    pub folder_key: String,
+    pub actions_status: Option<String>,
+    pub actions_run_url: Option<String>,
+}
+
+/// Extract the scheme+host base URL from a git remote URL.
+/// Handles both HTTPS (`https://host/owner/repo`) and SSH (`git@host:owner/repo`) formats.
+fn extract_base_url(remote_url: &str) -> Option<String> {
+    if let Some(rest) = remote_url.strip_prefix("git@") {
+        if let Some((host, _)) = rest.split_once(':') {
+            return Some(format!("https://{}", host));
+        }
+        return None;
+    }
+    let (proto, without_proto) = if let Some(s) = remote_url.strip_prefix("https://") {
+        ("https", s)
+    } else if let Some(s) = remote_url.strip_prefix("http://") {
+        ("http", s)
+    } else {
+        return None;
+    };
+    let host = without_proto.split('/').next()?;
+    Some(format!("{}://{}", proto, host))
+}
+
+/// Call the GitHub or Gitea Actions API and return `(conclusion_or_status, html_url)`.
+/// Returns `None` if no runs exist or the call fails.
+fn fetch_latest_run(
+    client: &reqwest::blocking::Client,
+    host: &str,
+    remote_url: &str,
+    owner_repo: &str,
+    token: Option<&str>,
+) -> Option<(String, Option<String>)> {
+    let url = match host {
+        "github" => format!(
+            "https://api.github.com/repos/{}/actions/runs?per_page=1",
+            owner_repo
+        ),
+        "gitea" => {
+            let base = extract_base_url(remote_url)?;
+            format!("{}/api/v1/repos/{}/actions/runs?limit=1", base, owner_repo)
+        }
+        _ => return None,
+    };
+
+    let mut req = client
+        .get(&url)
+        .header("User-Agent", "project-manager")
+        .timeout(std::time::Duration::from_secs(8));
+
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {}", t));
+    }
+    if host == "github" {
+        req = req
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+    }
+
+    let resp = req.send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let json: serde_json::Value = resp.json().ok()?;
+    let runs = json.get("workflow_runs")?.as_array()?;
+    let run = runs.first()?;
+
+    let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let conclusion = run.get("conclusion").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let html_url = run.get("html_url").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+    // If the run is in-flight, report the live status; otherwise report the conclusion.
+    let effective = if status == "in_progress" || status == "queued" || status == "waiting" {
+        status
+    } else if !conclusion.is_empty() {
+        conclusion
+    } else {
+        status
+    };
+
+    Some((effective, html_url))
+}
+
+#[tauri::command]
+pub fn refresh_actions_status(
+    state: tauri::State<'_, WorkspaceState>,
+    cache: tauri::State<'_, TokenCache>,
+) -> Result<Vec<ActionsStat>, String> {
+    let conn = open_db(&state)?;
+
+    // Load GitHub token from cache / keychain (soft failure — works without it for public repos)
+    let github_token: Option<String> = {
+        let mut map = cache.cache.lock().unwrap();
+        if let Some(t) = map.get("github_token").cloned() {
+            Some(t)
+        } else if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "github_token") {
+            match entry.get_password() {
+                Ok(t) => {
+                    map.insert("github_token".into(), t.clone());
+                    Some(t)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    };
+
+    // Load Gitea token similarly (optional)
+    let gitea_token: Option<String> = {
+        let mut map = cache.cache.lock().unwrap();
+        if let Some(t) = map.get("gitea_token").cloned() {
+            Some(t)
+        } else if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "gitea_token") {
+            match entry.get_password() {
+                Ok(t) => {
+                    map.insert("gitea_token".into(), t.clone());
+                    Some(t)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        }
+    };
+
+    // Fetch projects that have a supported host and owner_repo
+    let mut stmt = conn
+        .prepare(
+            "SELECT folder_key, host, repo, repo_owner FROM project_metadata
+             WHERE host IN ('github', 'gitea') AND repo_owner IS NOT NULL AND repo IS NOT NULL",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<(String, String, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if rows.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let github_token_ref = github_token.as_deref();
+    let gitea_token_ref = gitea_token.as_deref();
+
+    let results: Vec<ActionsStat> = std::thread::scope(|s| {
+        let handles: Vec<_> = rows
+            .iter()
+            .map(|(folder_key, host, repo, owner_repo)| {
+                let client = &client;
+                s.spawn(move || {
+                    let token = match host.as_str() {
+                        "github" => github_token_ref,
+                        "gitea" => gitea_token_ref,
+                        _ => None,
+                    };
+                    let run = fetch_latest_run(client, host, repo, owner_repo, token);
+                    let (actions_status, actions_run_url) = run
+                        .map(|(s, u)| (Some(s), u))
+                        .unwrap_or((None, None));
+                    ActionsStat {
+                        folder_key: folder_key.clone(),
+                        actions_status,
+                        actions_run_url,
+                    }
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .collect()
+    });
+
+    // Persist results back to DB
+    for stat in &results {
+        conn.execute(
+            "UPDATE project_metadata SET actions_status = ?1, actions_run_url = ?2 WHERE folder_key = ?3",
+            rusqlite::params![stat.actions_status, stat.actions_run_url, stat.folder_key],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(results)
 }
 
 #[derive(Debug, Serialize)]

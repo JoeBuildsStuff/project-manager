@@ -71,11 +71,15 @@ function ComboboxInput({
           <InputGroupButton
             size="icon-xs"
             variant="ghost"
-            render={<ComboboxTrigger />}
             data-slot="input-group-button"
             className="group-has-data-[slot=combobox-clear]/input-group:hidden data-pressed:bg-transparent"
             disabled={disabled}
-          />
+            asChild
+          >
+            <ComboboxPrimitive.Trigger className="[&_svg:not([class*='size-'])]:size-4">
+              <ChevronDownIcon className="pointer-events-none size-4 text-muted-foreground" />
+            </ComboboxPrimitive.Trigger>
+          </InputGroupButton>
         )}
         {showClear && <ComboboxClear disabled={disabled} />}
       </InputGroupAddon>

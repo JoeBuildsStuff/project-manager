@@ -14,24 +14,11 @@ import {
 } from "@/components/ui/sidebar";
 import { SidebarLogo } from "@/components/app-sidebar-logo";
 import { ModeToggle } from "@/components/mode-toggle";
-import type { StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, Project } from "../../types";
-import { ProjectSidebarContent } from "./ProjectSidebarContent";
-import { TaskSidebarContent } from "./TaskSidebarContent";
+import type { Project } from "../../types";
 import { NotesSidebarContent } from "./NotesSidebarContent";
 import type { NotesDocumentSummary } from "@/types";
 
 export interface AppSidebarProps {
-  statusFilter: StatusFilter;
-  categoryFilter: CategoryFilter;
-  deployFilter: DeployFilter;
-  hostFilter: HostFilter;
-  stageFilter: StageFilter;
-  onStatusFilter: (s: StatusFilter) => void;
-  onCategoryFilter: (b: CategoryFilter) => void;
-  onDeployFilter: (d: DeployFilter) => void;
-  onHostFilter: (h: HostFilter) => void;
-  onStageFilter: (s: StageFilter) => void;
-  filterOptions: { deploy_platforms: string[]; hosts: string[]; stages: string[] };
   onOpenSettings?: () => void;
   onJumpToProjects?: () => void;
   onJumpToTasks?: () => void;
@@ -47,31 +34,18 @@ export interface AppSidebarProps {
 }
 
 export default function AppSidebar({
-  statusFilter,
-  categoryFilter,
-  deployFilter,
-  hostFilter,
-  stageFilter,
-  onStatusFilter,
-  onCategoryFilter,
-  onDeployFilter,
-  onHostFilter,
-  onStageFilter,
-  filterOptions,
   onOpenSettings,
   onJumpToProjects,
   onJumpToTasks,
   onJumpToNotes,
   onJumpToTerminal,
   activeView,
-  taskProject,
   notesList = [],
   selectedNoteId = null,
   onSelectNoteId,
   onCreateNote,
   notesListLoading = false,
 }: AppSidebarProps) {
-  const isTaskView = activeView === "tasks";
   const isNotesView = activeView === "notes";
 
   return (
@@ -136,29 +110,13 @@ export default function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {isTaskView ? (
-          <TaskSidebarContent project={taskProject ?? null} />
-        ) : isNotesView ? (
+        {isNotesView && (
           <NotesSidebarContent
             notes={notesList}
             selectedId={selectedNoteId}
             onSelect={onSelectNoteId ?? (() => {})}
             onCreate={onCreateNote ?? (() => {})}
             loading={notesListLoading}
-          />
-        ) : (
-          <ProjectSidebarContent
-            statusFilter={statusFilter}
-            categoryFilter={categoryFilter}
-            deployFilter={deployFilter}
-            hostFilter={hostFilter}
-            stageFilter={stageFilter}
-            onStatusFilter={onStatusFilter}
-            onCategoryFilter={onCategoryFilter}
-            onDeployFilter={onDeployFilter}
-            onHostFilter={onHostFilter}
-            onStageFilter={onStageFilter}
-            filterOptions={filterOptions}
           />
         )}
       </SidebarContent>

@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { toast } from "sonner";
 import { Download } from "lucide-react";
-import type { NotesDocument, NotesDocumentSummary, Project, StatusFilter, CategoryFilter, DeployFilter, HostFilter, StageFilter, TaskCount } from "./types";
+import type { NotesDocument, NotesDocumentSummary, Project, TaskCount } from "./types";
 import AppSidebar from "./components/Sidebar";
 import ProjectTable from "./components/ProjectTable";
 import NewProjectDialog from "./components/NewProjectDialog";
@@ -49,11 +49,6 @@ export default function App() {
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<Project | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
-  const [deployFilter, setDeployFilter] = useState<DeployFilter>("all");
-  const [hostFilter, setHostFilter] = useState<HostFilter>("all");
-  const [stageFilter, setStageFilter] = useState<StageFilter>("all");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -253,50 +248,15 @@ export default function App() {
 
   // Client-side filtering — instant, no IPC round-trip
   const projects = useMemo(() => {
-    let filtered = allProjects;
-    if (statusFilter !== "all") {
-      filtered = filtered.filter((p) => p.status === statusFilter);
-    }
-    if (categoryFilter !== "all") {
-      filtered = filtered.filter((p) => p.category === categoryFilter);
-    }
-    if (deployFilter !== "all") {
-      filtered = filtered.filter((p) => p.deploy_platform === deployFilter);
-    }
-    if (hostFilter !== "all") {
-      filtered = filtered.filter((p) => p.host === hostFilter);
-    }
-    if (stageFilter !== "all") {
-      filtered = filtered.filter((p) => p.stage === stageFilter);
-    }
-    if (search) {
-      const q = search.toLowerCase();
-      filtered = filtered.filter(
-        (p) =>
-          p.folder_key.toLowerCase().includes(q) ||
-          p.folder_name.toLowerCase().includes(q) ||
-          (p.description ?? "").toLowerCase().includes(q)
-      );
-    }
-    return filtered;
-  }, [allProjects, statusFilter, categoryFilter, deployFilter, hostFilter, stageFilter, search]);
-
-  // Derive filter options from in-memory data (no extra DB query needed)
-  const filterOptions = useMemo(() => {
-    const deploySet = new Set<string>();
-    const hostSet = new Set<string>();
-    const stageSet = new Set<string>();
-    for (const p of allProjects) {
-      if (p.deploy_platform) deploySet.add(p.deploy_platform);
-      if (p.host) hostSet.add(p.host);
-      if (p.stage) stageSet.add(p.stage);
-    }
-    return {
-      deploy_platforms: [...deploySet].sort(),
-      hosts: [...hostSet].sort(),
-      stages: [...stageSet].sort(),
-    };
-  }, [allProjects]);
+    if (!search) return allProjects;
+    const q = search.toLowerCase();
+    return allProjects.filter(
+      (p) =>
+        p.folder_key.toLowerCase().includes(q) ||
+        p.folder_name.toLowerCase().includes(q) ||
+        (p.description ?? "").toLowerCase().includes(q)
+    );
+  }, [allProjects, search]);
 
   // Diff stats are now persisted in SQLite and loaded with projects.
   // They are refreshed automatically after each Sync.
@@ -444,17 +404,6 @@ export default function App() {
         className="flex-1 min-h-0 overflow-hidden"
       >
         <AppSidebar
-          statusFilter={statusFilter}
-          categoryFilter={categoryFilter}
-          deployFilter={deployFilter}
-          hostFilter={hostFilter}
-          stageFilter={stageFilter}
-          onStatusFilter={(s) => { setView("projects"); setStatusFilter(s); }}
-          onCategoryFilter={(b) => { setView("projects"); setCategoryFilter(b); }}
-          onDeployFilter={(d) => { setView("projects"); setDeployFilter(d); }}
-          onHostFilter={(h) => { setView("projects"); setHostFilter(h); }}
-          onStageFilter={(s) => { setView("projects"); setStageFilter(s); }}
-          filterOptions={filterOptions}
           onOpenSettings={() => setView("settings")}
           onJumpToProjects={handleJumpToProjects}
           onJumpToTasks={handleJumpToTasks}
