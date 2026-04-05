@@ -3928,10 +3928,13 @@ fn spawn_claude_wait_thread(
     });
 }
 
+/// Starts `claude -p` in the task repo. When `pass_anthropic_api_key` is false or omitted,
+/// `ANTHROPIC_API_KEY` is stripped from the child environment so CLI/subscription auth can win.
 #[tauri::command]
 pub async fn start_claude_task_run(
     task_id: i64,
     model: Option<String>,
+    pass_anthropic_api_key: Option<bool>,
     app: tauri::AppHandle,
     state: tauri::State<'_, WorkspaceState>,
     runs: tauri::State<'_, ClaudeRunState>,
@@ -3949,6 +3952,7 @@ pub async fn start_claude_task_run(
 
     // Normalize model: treat empty string as None (use CLI default)
     let model = model.filter(|m| !m.trim().is_empty());
+    let pass_anthropic_api_key = pass_anthropic_api_key.unwrap_or(false);
 
     {
         let conn = open_db(&state)?;
@@ -4037,9 +4041,16 @@ pub async fn start_claude_task_run(
     let spawn_run_id = run_id.clone();
     let spawn_prompt = prompt.clone();
     let spawn_app = app.clone();
+    let spawn_pass_api_key = pass_anthropic_api_key;
 
     let (child_proc, pid, child_stdout, child_stderr) =
         tauri::async_runtime::spawn_blocking(move || {
+            let parent_has_api_key = env::var_os("ANTHROPIC_API_KEY").is_some();
+            let child_will_receive_key = spawn_pass_api_key && parent_has_api_key;
+            println!(
+                "[start_claude_task_run] Claude spawn env: ANTHROPIC_API_KEY set in app process: {parent_has_api_key} | pass_to_child: {spawn_pass_api_key} | child sees key: {child_will_receive_key}"
+            );
+
             let mut cmd = Command::new("claude");
             cmd.arg("-p")
                 .arg(&spawn_prompt)
@@ -4050,6 +4061,10 @@ pub async fn start_claude_task_run(
 
             if let Some(ref m) = spawn_model {
                 cmd.arg("--model").arg(m);
+            }
+
+            if !spawn_pass_api_key {
+                cmd.env_remove("ANTHROPIC_API_KEY");
             }
 
             let mut child = cmd

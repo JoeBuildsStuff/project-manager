@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import {
   ANTHROPIC_MODEL_OPTIONS,
   DEFAULT_ANTHROPIC_MODEL,
@@ -172,6 +173,9 @@ export default function TaskFullPage({
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const selectedModelLabel =
     CLAUDE_MODEL_OPTIONS.find((o) => o.value === selectedModel)?.label ?? "Model";
+
+  // -- Claude spawn: pass API key env to child (off = strip key, favors subscription CLI auth) --
+  const [passAnthropicApiKey, setPassAnthropicApiKey] = useState(false);
 
   // -- Live run state --
   const runIdRef = useRef<string | null>(null);
@@ -412,6 +416,7 @@ export default function TaskFullPage({
       const started = await invoke<ClaudeRunStartedPayload>("start_claude_task_run", {
         taskId: task.id,
         model: selectedModel,
+        passAnthropicApiKey,
       });
       runIdRef.current = started.run_id;
       setRunId(started.run_id);
@@ -793,6 +798,23 @@ export default function TaskFullPage({
                   <Button variant="ghost" size="sm" onClick={handleRefreshRunState} disabled={!runId}>
                     Refresh
                   </Button>
+                </div>
+
+                <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="text-xs font-medium text-foreground">Pass ANTHROPIC_API_KEY</div>
+                    <p className="text-[11px] leading-snug text-muted-foreground">
+                      Off (default): the Claude process does not receive the variable—often matches Pro/Max CLI login. On:
+                      inherit it from this app (API usage). Each spawn prints a line to the dev terminal.
+                    </p>
+                  </div>
+                  <Switch
+                    size="sm"
+                    className="shrink-0 mt-0.5"
+                    checked={passAnthropicApiKey}
+                    onCheckedChange={(checked) => setPassAnthropicApiKey(checked)}
+                    disabled={isRunActive}
+                  />
                 </div>
 
                 {/* Run metadata */}
