@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   type Table,
@@ -31,6 +31,11 @@ interface Props<TData> {
 }
 
 const CONDITIONS = ["has any of"] as const;
+
+type FilterColumnMeta = {
+  filterValueLabels?: Record<string, string>;
+  filterMenuContent?: Record<string, ReactNode>;
+};
 
 export default function ActiveFilters<TData>({
   table,
@@ -316,6 +321,7 @@ function FilterValuesDropdown<TData>({
 }) {
   const column = table.getColumn(columnId);
   const facetedValues = column?.getFacetedUniqueValues();
+  const meta = column?.columnDef.meta as FilterColumnMeta | undefined;
 
   const uniqueValues = useMemo(() => {
     if (!facetedValues) return [];
@@ -329,7 +335,10 @@ function FilterValuesDropdown<TData>({
   }, [facetedValues]);
 
   const displayValues = values
-    .map((v) => (v === "__null__" ? "empty" : v))
+    .map((v) => {
+      if (v === "__null__") return "empty";
+      return meta?.filterValueLabels?.[v] ?? v;
+    })
     .join(", ");
 
   const toggleValue = (val: string) => {
@@ -357,7 +366,7 @@ function FilterValuesDropdown<TData>({
               {val === "__null__" ? (
                 <span className="italic text-muted-foreground/50">empty</span>
               ) : (
-                val
+                meta?.filterMenuContent?.[val] ?? meta?.filterValueLabels?.[val] ?? val
               )}
             </DropdownMenuCheckboxItem>
           ))}

@@ -19,6 +19,16 @@ import { perfStart, perfEnd } from "./lib/perf";
 import { ChatProvider, ChatFooterBar, ChatPanel } from "@/components/chat";
 import { useChatStore } from "@/lib/chat/chat-store";
 import { cn } from "@/lib/utils";
+import {
+  clearPinnedProjects,
+  readPinnedProjectKeys,
+  writePinnedProjectKeys,
+} from "@/lib/pinned-projects";
+import {
+  clearRecentProjects,
+  readRecentProjectKeys,
+  recordRecentProjectAccess,
+} from "@/lib/recent-projects";
 
 interface WorkspaceConfig {
   workspace_path: string | null;
@@ -72,6 +82,8 @@ export default function App() {
     }
   });
   const [notesListLoading, setNotesListLoading] = useState(false);
+  const [recentProjectKeys, setRecentProjectKeys] = useState<string[]>(() => readRecentProjectKeys());
+  const [pinnedProjectKeys, setPinnedProjectKeys] = useState<string[]>(() => readPinnedProjectKeys());
 
   // Check workspace config on mount
   useEffect(() => {
@@ -261,6 +273,45 @@ export default function App() {
     );
   }, [allProjects, search]);
 
+  const recentProjects = useMemo(() => {
+    const keySet = new Set(allProjects.map((p) => p.folder_key));
+    return recentProjectKeys
+      .filter((k) => keySet.has(k))
+      .map((k) => allProjects.find((p) => p.folder_key === k))
+      .filter((p): p is Project => p != null);
+  }, [allProjects, recentProjectKeys]);
+
+  const pinnedFolderKeys = useMemo(() => new Set(pinnedProjectKeys), [pinnedProjectKeys]);
+
+  const pinnedProjects = useMemo(() => {
+    const keySet = new Set(allProjects.map((p) => p.folder_key));
+    return pinnedProjectKeys
+      .filter((k) => keySet.has(k))
+      .map((k) => allProjects.find((p) => p.folder_key === k))
+      .filter((p): p is Project => p != null);
+  }, [allProjects, pinnedProjectKeys]);
+
+  const handleToggleProjectPin = useCallback((folderKey: string) => {
+    setPinnedProjectKeys((prev) => {
+      const has = prev.includes(folderKey);
+      const next = has
+        ? prev.filter((k) => k !== folderKey)
+        : [folderKey, ...prev.filter((k) => k !== folderKey)];
+      writePinnedProjectKeys(next);
+      return next;
+    });
+  }, []);
+
+  const prunePinnedKeys = useCallback((removedKeys: string[]) => {
+    const remove = new Set(removedKeys);
+    setPinnedProjectKeys((prev) => {
+      const next = prev.filter((k) => !remove.has(k));
+      if (next.length === prev.length) return prev;
+      writePinnedProjectKeys(next);
+      return next;
+    });
+  }, []);
+
   // Diff stats are now persisted in SQLite and loaded with projects.
   // They are refreshed automatically after each Sync.
 
@@ -306,11 +357,13 @@ export default function App() {
     if (selected && folderKeys.includes(selected.folder_key)) {
       setSelected(null);
     }
+    prunePinnedKeys(folderKeys);
     await load();
     loadTaskCounts();
   };
 
   const handleOpenTasks = (project: Project) => {
+    setRecentProjectKeys(recordRecentProjectAccess(project.folder_key));
     setTaskProject(project);
     setView("tasks");
   };
@@ -363,9 +416,15 @@ export default function App() {
   };
 
   const handleOpenFullPage = (project: Project) => {
+    setRecentProjectKeys(recordRecentProjectAccess(project.folder_key));
     setSelected(project);
     setFullPageProject(project);
     setView("project-detail");
+  };
+
+  const handleOpenRecentProject = (folderKey: string) => {
+    const p = allProjects.find((x) => x.folder_key === folderKey);
+    if (p) handleOpenFullPage(p);
   };
 
   const handleBackFromFullPage = () => {
@@ -401,6 +460,10 @@ export default function App() {
     } catch {
       // ignore
     }
+    clearRecentProjects();
+    setRecentProjectKeys([]);
+    clearPinnedProjects();
+    setPinnedProjectKeys([]);
     setView("projects");
   };
 
@@ -440,6 +503,11 @@ export default function App() {
           onSelectNoteId={handleSelectNoteId}
           onCreateNote={handleCreateNote}
           notesListLoading={notesListLoading}
+          pinnedProjects={pinnedProjects}
+          recentProjects={recentProjects}
+          activeProjectKey={fullPageProject?.folder_key ?? null}
+          onOpenPinnedProject={handleOpenRecentProject}
+          onOpenRecentProject={handleOpenRecentProject}
         />
 
         <SidebarInset className="min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">
@@ -482,12 +550,20 @@ export default function App() {
                       folderKey,
                       newName: nextName,
                     });
+                    setPinnedProjectKeys((prev) => {
+                      if (!prev.includes(folderKey)) return prev;
+                      const replaced = prev.map((k) => (k === folderKey ? nextKey : k));
+                      const next = replaced.filter((k, i, a) => a.indexOf(k) === i);
+                      writePinnedProjectKeys(next);
+                      return next;
+                    });
                     await load();
                     const updated = await invoke<Project | null>("get_project", { folderKey: nextKey });
                     setFullPageProject(updated);
                   }}
                   onDelete={async (folderKey) => {
                     await invoke("delete_project_folder", { folderKey });
+                    prunePinnedKeys([folderKey]);
                     await load();
                   }}
                   onOpenTask={(task) => handleOpenTaskDetail(task, "project-detail")}
@@ -541,6 +617,8 @@ export default function App() {
                   onDeleteSelected={handleDeleteSelected}
                   taskCounts={taskCounts}
                   onOpenTasks={handleOpenTasks}
+                  pinnedFolderKeys={pinnedFolderKeys}
+                  onTogglePin={handleToggleProjectPin}
                 />
               </div>
             )}

@@ -26,6 +26,7 @@ import {
   Trash2,
   ListTodo,
   Milestone,
+  Star,
   Play,
 } from "lucide-react";
 import {
@@ -62,6 +63,8 @@ interface TableMeta {
   onOpenTasks: (p: Project) => void;
   onFilterByValue: (columnId: string, value: string) => void;
   onOpenUrl: (url: string) => void;
+  pinnedKeys: ReadonlySet<string>;
+  onTogglePin: (folderKey: string) => void;
 }
 
 interface Props {
@@ -80,6 +83,8 @@ interface Props {
   onDeleteSelected: (folderKeys: string[]) => Promise<void>;
   taskCounts: Map<string, TaskCount>;
   onOpenTasks: (p: Project) => void;
+  pinnedFolderKeys: ReadonlySet<string>;
+  onTogglePin: (folderKey: string) => void;
 }
 
 function relativeDate(iso: string | null): string {
@@ -111,7 +116,89 @@ const arrIncludesFilter = (
   return filterValue.includes(normalized);
 };
 
-const columns: ColumnDef<Project>[] = [
+const starFilterMenuContent = {
+  "1": (
+    <span className="flex items-center gap-2">
+      <Star
+        className="h-3.5 w-3.5 shrink-0 text-amber-800 dark:text-amber-400"
+        strokeWidth={0}
+        fill="currentColor"
+        aria-hidden
+      />
+      <span>Starred</span>
+    </span>
+  ),
+  "0": (
+    <span className="flex items-center gap-2">
+      <Star
+        className="h-3.5 w-3.5 shrink-0 text-amber-800/45 dark:text-amber-400/45"
+        strokeWidth={1.75}
+        fill="none"
+        aria-hidden
+      />
+      <span>Not starred</span>
+    </span>
+  ),
+} as const;
+
+function createStarColumn(pinnedKeys: ReadonlySet<string>): ColumnDef<Project> {
+  return {
+    id: "star",
+    accessorFn: (row) => (pinnedKeys.has(row.folder_key) ? 1 : 0),
+    enableSorting: true,
+    enableHiding: true,
+    enableColumnFilter: true,
+    filterFn: arrIncludesFilter,
+    meta: {
+      filterValueLabels: { "0": "Not starred", "1": "Starred" },
+      filterMenuContent: starFilterMenuContent,
+    },
+    header: ({ column }) => (
+      <DataTableColumnHeader
+        column={column}
+        title="Star"
+        icon={<Star className={iconProps} strokeWidth={1.5} />}
+        filterOptionsTitle="Filter by star"
+        filterOptions={[
+          { value: "1", label: starFilterMenuContent["1"] },
+          { value: "0", label: starFilterMenuContent["0"] },
+        ]}
+      />
+    ),
+    cell: ({ row: { original: p }, table: t }) => {
+      const meta = t.options.meta as TableMeta | undefined;
+      const pinned = meta?.pinnedKeys.has(p.folder_key) ?? false;
+      return (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            meta?.onTogglePin(p.folder_key);
+          }}
+          className={cn(
+            "ml-2",
+            "inline-flex shrink-0 items-center justify-center border-0 bg-transparent p-0 shadow-none",
+            "rounded-none outline-none transition-colors",
+            "focus-visible:outline-none focus-visible:ring-0",
+            pinned
+              ? "text-amber-800 hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-300"
+              : "text-amber-800/45 hover:text-amber-800 dark:text-amber-400/45 dark:hover:text-amber-400",
+          )}
+          aria-label={pinned ? "Unstar project" : "Star project"}
+          aria-pressed={pinned}
+        >
+          <Star
+            className="h-3.5 w-3.5 shrink-0"
+            strokeWidth={pinned ? 0 : 1.75}
+            fill={pinned ? "currentColor" : "none"}
+          />
+        </button>
+      );
+    },
+  };
+}
+
+const projectTableColumnsPart1: ColumnDef<Project>[] = [
   {
     id: "select",
     enableSorting: false,
@@ -149,6 +236,9 @@ const columns: ColumnDef<Project>[] = [
       <div className="text-xs font-medium">{p.folder_name}</div>
     ),
   },
+];
+
+const projectTableColumnsDescription: ColumnDef<Project>[] = [
   {
     accessorKey: "description",
     enableSorting: true,
@@ -169,6 +259,9 @@ const columns: ColumnDef<Project>[] = [
       ) : null;
     },
   },
+];
+
+const projectTableColumnsPart2: ColumnDef<Project>[] = [
   {
     accessorKey: "category",
     enableSorting: true,
@@ -424,6 +517,8 @@ export default function ProjectTable({
   onDeleteSelected,
   taskCounts,
   onOpenTasks,
+  pinnedFolderKeys,
+  onTogglePin,
 }: Props) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -497,6 +592,16 @@ export default function ProjectTable({
     });
   }, []);
 
+  const columns = useMemo(
+    () => [
+      ...projectTableColumnsPart1,
+      ...projectTableColumnsDescription,
+      createStarColumn(pinnedFolderKeys),
+      ...projectTableColumnsPart2,
+    ],
+    [pinnedFolderKeys],
+  );
+
   const table = useReactTable({
     data: projects,
     columns,
@@ -512,7 +617,14 @@ export default function ProjectTable({
     getFacetedRowModel: facetedRowModel,
     getFacetedUniqueValues: facetedUniqueValues,
     enableRowSelection: true,
-    meta: { taskCounts, onOpenTasks, onFilterByValue: handleFilterByValue, onOpenUrl: (url: string) => invoke("open_url", { url }) } as TableMeta,
+    meta: {
+      taskCounts,
+      onOpenTasks,
+      onFilterByValue: handleFilterByValue,
+      onOpenUrl: (url: string) => invoke("open_url", { url }),
+      pinnedKeys: pinnedFolderKeys,
+      onTogglePin,
+    } as TableMeta,
   });
 
   const selectedKeys = Object.keys(rowSelection).filter((k) => rowSelection[k]);
@@ -637,6 +749,7 @@ export default function ProjectTable({
             <Skeleton className="h-4 w-4 rounded" />
             <Skeleton className="h-3.5 w-[120px]" />
             <Skeleton className="h-3.5 w-[220px]" />
+            <Skeleton className="h-3.5 w-3.5 shrink-0 rounded-sm" />
             <Skeleton className="h-3.5 w-[90px]" />
             <Skeleton className="h-3.5 w-[80px]" />
             <Skeleton className="h-3.5 w-[80px]" />
@@ -651,6 +764,7 @@ export default function ProjectTable({
               <Skeleton className="h-4 w-4 rounded" />
               <Skeleton className="h-3.5 w-[120px]" />
               <Skeleton className="h-3.5 w-[220px]" />
+              <Skeleton className="h-3.5 w-3.5 shrink-0 rounded-sm" />
               <Skeleton className="h-3.5 w-[90px]" />
               <Skeleton className="h-3.5 w-[80px]" />
               <Skeleton className="h-3.5 w-[80px]" />
@@ -674,8 +788,9 @@ export default function ProjectTable({
                       className={cn(
                         header.column.id === "select"           && "w-10 pl-3",
                         header.column.id === "folder_name"      && "w-[150px] pl-2",
-                        header.column.id === "category"         && "w-[110px]",
                         header.column.id === "description"      && "w-[260px]",
+                        header.column.id === "star"             && "w-9",
+                        header.column.id === "category"         && "w-[110px]",
                         header.column.id === "commit_count"     && "w-[80px]",
                         header.column.id === "diff"             && "w-[110px]",
                         header.column.id === "last_commit_date" && "w-[100px] pr-4",
@@ -714,6 +829,7 @@ export default function ProjectTable({
                         className={cn(
                           cell.column.id === "select"           && "pl-3",
                           cell.column.id === "folder_name"      && "pl-2",
+                          cell.column.id === "star"             && "px-0",
                           cell.column.id === "last_commit_date" && "pr-4",
                         )}
                       >

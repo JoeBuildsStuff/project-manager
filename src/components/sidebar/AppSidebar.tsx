@@ -1,4 +1,4 @@
-import { Check, File, Kanban, Settings, Terminal } from "lucide-react";
+import { Check, File, FolderOpen, Kanban, Settings, Star, Terminal } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -31,6 +31,11 @@ export interface AppSidebarProps {
   onSelectNoteId?: (id: string) => void;
   onCreateNote?: () => void;
   notesListLoading?: boolean;
+  pinnedProjects?: Project[];
+  recentProjects?: Project[];
+  activeProjectKey?: string | null;
+  onOpenPinnedProject?: (folderKey: string) => void;
+  onOpenRecentProject?: (folderKey: string) => void;
 }
 
 export default function AppSidebar({
@@ -40,11 +45,17 @@ export default function AppSidebar({
   onJumpToNotes,
   onJumpToTerminal,
   activeView,
+  taskProject = null,
   notesList = [],
   selectedNoteId = null,
   onSelectNoteId,
   onCreateNote,
   notesListLoading = false,
+  pinnedProjects = [],
+  recentProjects = [],
+  activeProjectKey = null,
+  onOpenPinnedProject,
+  onOpenRecentProject,
 }: AppSidebarProps) {
   const isNotesView = activeView === "notes";
 
@@ -109,6 +120,63 @@ export default function AppSidebar({
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {pinnedProjects.length > 0 && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Pinned</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {pinnedProjects.map((p) => (
+                  <SidebarMenuItem key={p.folder_key}>
+                    <SidebarMenuButton
+                      isActive={
+                        (activeView === "project-detail" && activeProjectKey === p.folder_key) ||
+                        (activeView === "tasks" && taskProject?.folder_key === p.folder_key)
+                      }
+                      onClick={() => onOpenPinnedProject?.(p.folder_key)}
+                      className="w-full"
+                      tooltip={p.folder_name}
+                    >
+                      <Star
+                        className="h-3.5 w-3.5 shrink-0 text-amber-800 dark:text-amber-400"
+                        fill="currentColor"
+                        strokeWidth={0}
+                        aria-hidden
+                      />
+                      <span>{p.folder_name}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+
+        {recentProjects.length > 0 && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Recent</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {recentProjects.map((p) => (
+                  <SidebarMenuItem key={p.folder_key}>
+                    <SidebarMenuButton
+                      isActive={
+                        (activeView === "project-detail" && activeProjectKey === p.folder_key) ||
+                        (activeView === "tasks" && taskProject?.folder_key === p.folder_key)
+                      }
+                      onClick={() => onOpenRecentProject?.(p.folder_key)}
+                      className="w-full"
+                      tooltip={p.folder_name}
+                    >
+                      <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span>{p.folder_name}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
 
         {isNotesView && (
           <NotesSidebarContent

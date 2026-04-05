@@ -16,6 +16,10 @@ interface DataTableColumnHeaderProps<TData, TValue>
   column: Column<TData, TValue>;
   title: string;
   icon?: React.ReactNode;
+  /** Fixed filter choices with custom labels (e.g. star icons instead of raw facet values). */
+  filterOptions?: { value: string; label: React.ReactNode }[];
+  /** Heading above custom `filterOptions` (default: Filter by value). */
+  filterOptionsTitle?: string;
 }
 
 export function DataTableColumnHeader<TData, TValue>({
@@ -23,12 +27,17 @@ export function DataTableColumnHeader<TData, TValue>({
   title,
   icon,
   className,
+  filterOptions,
+  filterOptionsTitle = "Filter by value",
 }: DataTableColumnHeaderProps<TData, TValue>) {
   const [open, setOpen] = useState(false);
   const sorted = column.getIsSorted();
   const canFilter = column.getCanFilter();
   const filterValue = column.getFilterValue() as string[] | undefined;
   const isFiltered = filterValue && filterValue.length > 0;
+  const useCustomFilterOptions = Boolean(
+    filterOptions && filterOptions.length > 0 && canFilter,
+  );
 
   if (!column.getCanSort()) {
     return (
@@ -41,7 +50,7 @@ export function DataTableColumnHeader<TData, TValue>({
 
   // Only compute unique values when the dropdown is open
   let uniqueValues: (string | null)[] = [];
-  if (open && canFilter) {
+  if (open && canFilter && !useCustomFilterOptions) {
     const facetedValues = column.getFacetedUniqueValues();
     uniqueValues = Array.from(facetedValues.keys())
       .map((v) => (v == null ? null : String(v)))
@@ -51,6 +60,14 @@ export function DataTableColumnHeader<TData, TValue>({
         return a.localeCompare(b);
       });
   }
+
+  const toggleFilterOptionValue = (value: string) => {
+    const current = (column.getFilterValue() as string[] | undefined) ?? [];
+    const next = current.includes(value)
+      ? current.filter((v) => v !== value)
+      : [...current, value];
+    column.setFilterValue(next.length ? next : undefined);
+  };
 
   const toggleFilterValue = (value: string | null) => {
     const current = (column.getFilterValue() as string[] | undefined) ?? [];
@@ -107,7 +124,36 @@ export function DataTableColumnHeader<TData, TValue>({
             Hide
           </DropdownMenuItem>
 
-          {canFilter && uniqueValues.length > 0 && (
+          {useCustomFilterOptions && filterOptions && (
+            <>
+              <DropdownMenuSeparator />
+              <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {filterOptionsTitle}
+              </div>
+              {isFiltered && (
+                <DropdownMenuItem
+                  className="gap-2 text-xs text-muted-foreground"
+                  onClick={() => column.setFilterValue(undefined)}
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Clear filter
+                </DropdownMenuItem>
+              )}
+              {filterOptions.map((opt) => (
+                <DropdownMenuCheckboxItem
+                  key={opt.value}
+                  checked={filterValue?.includes(opt.value) ?? false}
+                  onCheckedChange={() => toggleFilterOptionValue(opt.value)}
+                  onSelect={(e) => e.preventDefault()}
+                  className="gap-2 text-xs"
+                >
+                  {opt.label}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </>
+          )}
+
+          {canFilter && !useCustomFilterOptions && uniqueValues.length > 0 && (
             <>
               <DropdownMenuSeparator />
               <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
