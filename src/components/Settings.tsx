@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Input } from "@/components/ui/input";
 import { ArrowLeft, FolderOpen, Check, Eye, EyeOff, KeyRound, Trash2, BrainCircuit } from "lucide-react";
 
@@ -191,6 +192,7 @@ export default function Settings({ workspacePath, onWorkspaceChanged, onBack }: 
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <SidebarTrigger className="-ml-1 shrink-0" />
         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onBack}>
           <ArrowLeft className="h-4 w-4" />
         </Button>

@@ -12,6 +12,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -535,6 +536,7 @@ export default function TaskFullPage({
     <div className="flex h-full min-h-0 flex-col">
       {/* Header */}
       <div className="flex items-center gap-3 border-b px-6 py-3 shrink-0">
+        <SidebarTrigger className="-ml-1 shrink-0" />
         <Button variant="ghost" size="sm" className="gap-1.5 h-7 text-xs" onClick={onBack}>
           <ArrowLeft className="h-3.5 w-3.5" />
           Back

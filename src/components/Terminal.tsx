@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 
 interface HistoryEntry {
   command: string;
@@ -85,10 +86,15 @@ export default function Terminal() {
   };
 
   return (
-    <div
-      className="flex flex-col h-full bg-black text-green-400 font-mono text-sm rounded-lg overflow-hidden border border-zinc-700"
-      onClick={() => inputRef.current?.focus()}
-    >
+    <div className="flex h-full min-h-0 flex-col gap-2">
+      <div className="flex shrink-0 items-center gap-2 py-1">
+        <SidebarTrigger className="-ml-1 shrink-0" />
+        <span className="text-xs text-muted-foreground">Terminal</span>
+      </div>
+      <div
+        className="flex min-h-0 flex-1 flex-col rounded-lg border border-zinc-700 bg-black font-mono text-sm text-green-400 overflow-hidden"
+        onClick={() => inputRef.current?.focus()}
+      >
       {/* Output area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {history.length === 0 && (
@@ -141,6 +147,7 @@ export default function Terminal() {
           autoCorrect="off"
           autoCapitalize="off"
         />
+      </div>
       </div>
     </div>
   );

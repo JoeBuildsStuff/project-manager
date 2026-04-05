@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProjectDetailContent } from "./ProjectDetailContent";
 import { CategoryBadge, HostBadge, StatusBadge, StageBadge, DeployBadge } from "./StatusBadge";
@@ -39,6 +40,7 @@ export default function ProjectFullPage({
     <div className="flex h-full flex-col min-h-0">
       {/* Top bar */}
       <div className="flex items-center gap-2 p-1 shrink-0">
+        <SidebarTrigger className="-ml-1 shrink-0" />
         <Button variant="ghost" size="sm" className="gap-1.5 h-7 text-xs" onClick={onBack}>
           <ArrowLeft className="h-3.5 w-3.5" />
           Back
