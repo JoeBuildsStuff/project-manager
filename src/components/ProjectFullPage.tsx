@@ -38,7 +38,7 @@ export default function ProjectFullPage({
   return (
     <div className="flex h-full flex-col min-h-0">
       {/* Top bar */}
-      <div className="flex items-center gap-3 border-b px-6 py-3 shrink-0">
+      <div className="flex items-center gap-2 p-1 shrink-0">
         <Button variant="ghost" size="sm" className="gap-1.5 h-7 text-xs" onClick={onBack}>
           <ArrowLeft className="h-3.5 w-3.5" />
           Back
@@ -58,7 +58,7 @@ export default function ProjectFullPage({
       </div>
 
       {/* Tab bar */}
-      <div className="flex items-center gap-1 border-b px-6 shrink-0">
+      <div className="flex items-center gap-1 p-1 shrink-0">
         <TabButton active={tab === "details"} onClick={() => setTab("details")}>Details</TabButton>
         <TabButton active={tab === "tasks"} onClick={() => setTab("tasks")}>Tasks</TabButton>
       </div>
@@ -66,7 +66,7 @@ export default function ProjectFullPage({
       {/* Content */}
       {tab === "details" ? (
         <ScrollArea className="flex-1 min-h-0">
-          <div className="px-6 py-6 max-w-4xl">
+          <div className="p-3 max-w-4xl">
             <ProjectDetailContent
               project={p}
               isOpen={true}
@@ -96,7 +96,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   return (
     <button
       onClick={onClick}
-      className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+      className={`p-2 text-sm font-medium border-b-2 transition-colors ${
         active
           ? "border-foreground text-foreground"
           : "border-transparent text-muted-foreground hover:text-foreground"

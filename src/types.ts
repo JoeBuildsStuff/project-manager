@@ -79,6 +79,8 @@ export interface ClaudeRunCompletedPayload {
   finished_at: number;
   final_text: string | null;
   usage?: unknown;
+  total_cost_usd?: number | null;
+  model_usage?: unknown;
 }
 
 export interface ClaudeRunErrorPayload {
@@ -121,6 +123,7 @@ export interface ClaudeEventRow {
   raw_type: string | null;
   raw_subtype: string | null;
   text: string | null;
+  raw_json: string | null;
 }
 
 export interface ClaudeResultRow {
@@ -135,6 +138,28 @@ export interface ClaudeResultRow {
   duration_ms: number | null;
   num_turns: number | null;
   stop_reason: string | null;
+  total_cost_usd: number | null;
+  model_usage_json: string | null;
+  duration_api_ms: number | null;
+  terminal_reason: string | null;
+}
+
+export interface ClaudeRunModelUsageRow {
+  model_name: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  web_search_requests: number | null;
+  cost_usd: number | null;
+  context_window: number | null;
+  max_output_tokens: number | null;
+}
+
+export interface TaskClaudeCostRow {
+  task_id: number;
+  total_cost_usd: number;
+  run_count: number;
 }
 
 export interface TaskCount {

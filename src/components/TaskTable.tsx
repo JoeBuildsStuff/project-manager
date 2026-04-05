@@ -27,6 +27,7 @@ import {
   Trash2,
   Loader2,
   Kanban,
+  DollarSign,
   Pencil,
 } from "lucide-react";
 import {
@@ -64,7 +65,7 @@ import {
 import { DataTableColumnHeader } from "@/components/ui/data-table-column-header";
 import { DataTableViewOptions } from "@/components/ui/data-table-view-options";
 import { cn } from "@/lib/utils";
-import type { Task, Project } from "@/types";
+import type { Task, Project, TaskClaudeCostRow } from "@/types";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import ActiveFilters from "./ActiveFilters";
 import SavedViewPicker from "./SavedViewPicker";
@@ -109,7 +110,8 @@ const sortedRowModel = getSortedRowModel<Task>();
 const facetedRowModel = getFacetedRowModel<Task>();
 const facetedUniqueValues = getFacetedUniqueValues<Task>();
 
-const columns: ColumnDef<Task>[] = [
+function buildTaskTableColumns(taskClaudeCosts: Record<number, number>): ColumnDef<Task>[] {
+  return [
   {
     id: "select",
     enableSorting: false,
@@ -221,6 +223,27 @@ const columns: ColumnDef<Task>[] = [
     cell: ({ getValue }) => <TaskPriorityBadge priority={getValue() as string | null} />,
   },
   {
+    id: "claude_cost",
+    accessorFn: (row) => taskClaudeCosts[row.id],
+    enableSorting: true,
+    header: ({ column }) => (
+      <DataTableColumnHeader
+        column={column}
+        title="Claude $"
+        icon={<DollarSign className={iconProps} strokeWidth={1.5} />}
+      />
+    ),
+    cell: ({ getValue }) => {
+      const v = getValue() as number | undefined;
+      if (v == null || Number.isNaN(v)) {
+        return <span className="text-xs text-muted-foreground">{"\u2014"}</span>;
+      }
+      return (
+        <span className="text-xs tabular-nums text-muted-foreground">${v.toFixed(2)}</span>
+      );
+    },
+  },
+  {
     accessorKey: "created_at",
     enableSorting: true,
     header: ({ column }) => (
@@ -238,9 +261,11 @@ const columns: ColumnDef<Task>[] = [
     },
   },
 ];
+}
 
 export default function TaskTable({ project, allProjects, onBack, onOpenTask, embedded = false }: Props) {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskClaudeCosts, setTaskClaudeCosts] = useState<Record<number, number>>({});
   const [loading, setLoading] = useState(true);
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -322,6 +347,16 @@ export default function TaskTable({ project, allProjects, onBack, onOpenTask, em
         folderKey: project?.folder_key ?? null,
       });
       setTasks(rows);
+      try {
+        const costRows = await invoke<TaskClaudeCostRow[]>("get_claude_cost_totals_by_task");
+        const next: Record<number, number> = {};
+        for (const c of costRows) {
+          next[c.task_id] = c.total_cost_usd;
+        }
+        setTaskClaudeCosts(next);
+      } catch {
+        setTaskClaudeCosts({});
+      }
     } finally {
       setLoading(false);
     }
@@ -330,6 +365,11 @@ export default function TaskTable({ project, allProjects, onBack, onOpenTask, em
   useEffect(() => {
     loadTasks();
   }, [loadTasks]);
+
+  const columns = useMemo(
+    () => buildTaskTableColumns(taskClaudeCosts),
+    [taskClaudeCosts],
+  );
 
   const handleCreate = async () => {
     if (!newTitle.trim()) return;

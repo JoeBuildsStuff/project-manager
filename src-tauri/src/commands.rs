@@ -109,7 +109,8 @@ struct ClaudeRunEntry {
     cancelled: bool,
     seq: u64,
     final_text: String,
-    usage: Option<Value>,
+    /// Full last `type: "result"` SDK message (includes `total_cost_usd`, `modelUsage`, etc.).
+    last_result: Option<Value>,
     db_path: Option<PathBuf>,
 }
 
@@ -143,7 +144,12 @@ pub struct ClaudeRunCompletedPayload {
     pub status: ClaudeTaskRunStatus,
     pub finished_at: u64,
     pub final_text: Option<String>,
+    /// Nested `usage` object from the result message (tokens, etc.).
     pub usage: Option<Value>,
+    /// From the result message root when the CLI provides it.
+    pub total_cost_usd: Option<f64>,
+    /// Per-model rollup from the result message (`modelUsage`), when present.
+    pub model_usage: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -444,7 +450,51 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     )
     .map_err(|e| e.to_string())?;
 
+    migrate_claude_tracking(&conn)?;
+
     Ok(conn)
+}
+
+/// Add analytics columns/tables and repair older rows from stored `raw_json` result lines.
+fn migrate_claude_tracking(conn: &Connection) -> Result<(), String> {
+    let _ = conn.execute(
+        "ALTER TABLE claude_results ADD COLUMN total_cost_usd REAL",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE claude_results ADD COLUMN model_usage_json TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE claude_results ADD COLUMN duration_api_ms INTEGER",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE claude_results ADD COLUMN terminal_reason TEXT",
+        [],
+    );
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS claude_run_model_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES claude_sessions(run_id) ON DELETE CASCADE,
+            model_name TEXT NOT NULL,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cache_read_input_tokens INTEGER,
+            cache_creation_input_tokens INTEGER,
+            web_search_requests INTEGER,
+            cost_usd REAL,
+            context_window INTEGER,
+            max_output_tokens INTEGER,
+            UNIQUE (run_id, model_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_claude_run_model_usage_run
+            ON claude_run_model_usage(run_id);",
+    )
+    .map_err(|e| e.to_string())?;
+
+    backfill_claude_results_from_events(conn).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn workspace_path(state: &WorkspaceState, folder_key: &str) -> Result<PathBuf, String> {
@@ -3376,7 +3426,7 @@ fn spawn_claude_stream_threads(
                                 if let Some(ref result_text) = text {
                                     guard.final_text = result_text.clone();
                                 }
-                                guard.usage = value.get("usage").cloned();
+                                guard.last_result = Some(value.clone());
                             }
                             guard.seq += 1;
                             seq = guard.seq;
@@ -3484,6 +3534,226 @@ fn spawn_claude_stream_threads(
     });
 }
 
+fn json_num_as_i64(v: &Value) -> Option<i64> {
+    v.as_i64()
+        .or_else(|| v.as_f64().map(|f| f as i64))
+}
+
+#[derive(Default)]
+struct ClaudeSdkProjection {
+    usage_json: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_creation_input_tokens: Option<i64>,
+    cache_read_input_tokens: Option<i64>,
+    total_cost_usd: Option<f64>,
+    cost_usd: Option<f64>,
+    model: Option<String>,
+    num_turns: Option<i64>,
+    stop_reason: Option<String>,
+    terminal_reason: Option<String>,
+    duration_api_ms: Option<i64>,
+    model_usage_json: Option<String>,
+}
+
+fn project_sdk_result(result: Option<&Value>, session_model: Option<&str>) -> ClaudeSdkProjection {
+    let mut p = ClaudeSdkProjection::default();
+    let Some(r) = result else {
+        return p;
+    };
+    let usage = r.get("usage");
+    p.usage_json = usage.map(|u| u.to_string());
+    p.input_tokens = usage.and_then(|u| u.get("input_tokens")).and_then(|v| json_num_as_i64(v));
+    p.output_tokens = usage.and_then(|u| u.get("output_tokens")).and_then(|v| json_num_as_i64(v));
+    p.cache_creation_input_tokens = usage
+        .and_then(|u| u.get("cache_creation_input_tokens"))
+        .and_then(|v| json_num_as_i64(v));
+    p.cache_read_input_tokens = usage
+        .and_then(|u| u.get("cache_read_input_tokens"))
+        .and_then(|v| json_num_as_i64(v));
+
+    let model_for_pricing = usage
+        .and_then(|u| u.get("model"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| session_model.map(str::to_string));
+    p.model = model_for_pricing.clone();
+
+    p.total_cost_usd = r.get("total_cost_usd").and_then(Value::as_f64);
+    let usage_cost = usage.and_then(|u| u.get("cost_usd")).and_then(Value::as_f64);
+
+    p.cost_usd = p.total_cost_usd.or(usage_cost).or_else(|| {
+        let mn = model_for_pricing.as_deref()?;
+        let (input_rate, output_rate) = model_token_pricing_usd_per_million(mn)?;
+        let input = p.input_tokens.unwrap_or(0) as f64;
+        let output = p.output_tokens.unwrap_or(0) as f64;
+        Some((input / 1_000_000.0) * input_rate + (output / 1_000_000.0) * output_rate)
+    });
+
+    p.num_turns = r
+        .get("num_turns")
+        .and_then(|v| json_num_as_i64(v))
+        .or_else(|| {
+            usage
+                .and_then(|u| u.get("num_turns"))
+                .and_then(|v| json_num_as_i64(v))
+        });
+
+    p.stop_reason = r
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            usage
+                .and_then(|u| u.get("stop_reason"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+
+    p.terminal_reason = r
+        .get("terminal_reason")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    p.duration_api_ms = r
+        .get("duration_api_ms")
+        .and_then(|v| json_num_as_i64(v));
+
+    p.model_usage_json = r.get("modelUsage").map(|v| v.to_string());
+
+    p
+}
+
+fn persist_claude_model_usage_breakdown(
+    conn: &Connection,
+    run_id: &str,
+    result: &Value,
+) -> rusqlite::Result<()> {
+    let Some(mu) = result.get("modelUsage").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    conn.execute(
+        "DELETE FROM claude_run_model_usage WHERE run_id = ?1",
+        [run_id],
+    )?;
+    let mut stmt = conn.prepare(
+        "INSERT INTO claude_run_model_usage (
+            run_id, model_name, input_tokens, output_tokens,
+            cache_read_input_tokens, cache_creation_input_tokens, web_search_requests,
+            cost_usd, context_window, max_output_tokens
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
+    for (model_name, raw) in mu {
+        let Some(obj) = raw.as_object() else {
+            continue;
+        };
+        let i64f = |k: &str| -> Option<i64> { obj.get(k).and_then(|v| json_num_as_i64(v)) };
+        let cost = obj.get("costUSD").and_then(Value::as_f64);
+        stmt.execute(rusqlite::params![
+            run_id,
+            model_name.as_str(),
+            i64f("inputTokens"),
+            i64f("outputTokens"),
+            i64f("cacheReadInputTokens"),
+            i64f("cacheCreationInputTokens"),
+            i64f("webSearchRequests"),
+            cost,
+            i64f("contextWindow"),
+            i64f("maxOutputTokens"),
+        ])?;
+    }
+    Ok(())
+}
+
+fn backfill_claude_results_from_events(conn: &Connection) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT cr.id, cr.run_id, cr.duration_ms, cr.result_text,
+                (SELECT raw_json FROM claude_events e
+                 WHERE e.run_id = cr.run_id AND e.kind = 'result' AND e.raw_json IS NOT NULL
+                 ORDER BY e.seq DESC LIMIT 1) AS raw_json
+         FROM claude_results cr
+         WHERE (
+             (cr.total_cost_usd IS NULL AND cr.cost_usd IS NULL)
+             OR cr.model IS NULL
+         )
+         AND EXISTS (
+             SELECT 1 FROM claude_events e2
+             WHERE e2.run_id = cr.run_id AND e2.kind = 'result' AND e2.raw_json IS NOT NULL
+         )",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })?;
+
+    for r in rows {
+        let (id, run_id, _duration_ms, _result_text, raw_json) = r?;
+        let Some(raw) = raw_json else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        let session_model = conn
+            .query_row(
+                "SELECT model FROM claude_sessions WHERE run_id = ?1",
+                [&run_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .flatten();
+
+        let proj = project_sdk_result(Some(&value), session_model.as_deref());
+
+        let _ = conn.execute(
+            "UPDATE claude_results SET
+                total_cost_usd = COALESCE(total_cost_usd, ?1),
+                cost_usd = COALESCE(cost_usd, ?2),
+                model = COALESCE(model, ?3),
+                input_tokens = COALESCE(input_tokens, ?4),
+                output_tokens = COALESCE(output_tokens, ?5),
+                cache_creation_input_tokens = COALESCE(cache_creation_input_tokens, ?6),
+                cache_read_input_tokens = COALESCE(cache_read_input_tokens, ?7),
+                num_turns = COALESCE(num_turns, ?8),
+                stop_reason = COALESCE(stop_reason, ?9),
+                terminal_reason = COALESCE(terminal_reason, ?10),
+                duration_api_ms = COALESCE(duration_api_ms, ?11),
+                model_usage_json = COALESCE(model_usage_json, ?12),
+                usage_json = COALESCE(usage_json, ?13)
+             WHERE id = ?14",
+            rusqlite::params![
+                proj.total_cost_usd,
+                proj.cost_usd,
+                proj.model,
+                proj.input_tokens,
+                proj.output_tokens,
+                proj.cache_creation_input_tokens,
+                proj.cache_read_input_tokens,
+                proj.num_turns,
+                proj.stop_reason,
+                proj.terminal_reason,
+                proj.duration_api_ms,
+                proj.model_usage_json,
+                proj.usage_json,
+                id,
+            ],
+        );
+
+        if value.get("modelUsage").is_some() {
+            let _ = persist_claude_model_usage_breakdown(conn, &run_id, &value);
+        }
+    }
+    Ok(())
+}
+
 fn persist_session_completion(
     db_path: &Path,
     run_id: &str,
@@ -3492,75 +3762,64 @@ fn persist_session_completion(
     finished_at: u64,
     started_at: u64,
     final_text: Option<&str>,
-    usage: Option<&Value>,
+    result: Option<&Value>,
 ) {
     let Ok(conn) = Connection::open(db_path) else {
         return;
     };
 
-    let usage_json = usage.map(|v| v.to_string());
+    let session_model = conn
+        .query_row(
+            "SELECT model FROM claude_sessions WHERE run_id = ?1",
+            [run_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .flatten();
 
-    // Update the session row
+    let proj = project_sdk_result(result, session_model.as_deref());
+    let usage_json = proj.usage_json.clone();
+
     let _ = conn.execute(
         "UPDATE claude_sessions SET status = ?1, exit_code = ?2, finished_at = ?3, final_text = ?4, usage_json = ?5
          WHERE run_id = ?6",
         rusqlite::params![status, exit_code, finished_at, final_text, usage_json, run_id],
     );
 
-    // Project into claude_results for analytics
-    let input_tokens = usage
-        .and_then(|u| u.get("input_tokens"))
-        .and_then(Value::as_i64);
-    let output_tokens = usage
-        .and_then(|u| u.get("output_tokens"))
-        .and_then(Value::as_i64);
-    let cache_creation = usage
-        .and_then(|u| u.get("cache_creation_input_tokens"))
-        .and_then(Value::as_i64);
-    let cache_read = usage
-        .and_then(|u| u.get("cache_read_input_tokens"))
-        .and_then(Value::as_i64);
-
-    // Try to get cost from the usage object if available, otherwise
-    // compute a fallback from token counts for the known Claude models
-    // exposed in the task runner UI.
-    let usage_cost_usd = usage
-        .and_then(|u| u.get("cost_usd"))
-        .and_then(Value::as_f64);
-
-    let duration_ms = finished_at.saturating_sub(started_at);
-
-    let model = usage
-        .and_then(|u| u.get("model"))
-        .and_then(Value::as_str);
-
-    let num_turns = usage
-        .and_then(|u| u.get("num_turns"))
-        .and_then(Value::as_i64);
-
-    let stop_reason = usage
-        .and_then(|u| u.get("stop_reason"))
-        .and_then(Value::as_str);
-
-    let cost_usd = usage_cost_usd.or_else(|| {
-        let model_name = model?;
-        let (input_rate, output_rate) = model_token_pricing_usd_per_million(model_name)?;
-        let input = input_tokens.unwrap_or(0) as f64;
-        let output = output_tokens.unwrap_or(0) as f64;
-        Some((input / 1_000_000.0) * input_rate + (output / 1_000_000.0) * output_rate)
-    });
+    let duration_ms = finished_at.saturating_sub(started_at) as i64;
 
     let _ = conn.execute(
         "INSERT INTO claude_results (run_id, result_text, model, input_tokens, output_tokens,
             cache_creation_input_tokens, cache_read_input_tokens, cost_usd, duration_ms,
-            num_turns, stop_reason, usage_json, ts)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            num_turns, stop_reason, usage_json, ts, total_cost_usd, model_usage_json,
+            duration_api_ms, terminal_reason)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         rusqlite::params![
-            run_id, final_text, model, input_tokens, output_tokens,
-            cache_creation, cache_read, cost_usd, duration_ms,
-            num_turns, stop_reason, usage_json, finished_at,
+            run_id,
+            final_text,
+            proj.model,
+            proj.input_tokens,
+            proj.output_tokens,
+            proj.cache_creation_input_tokens,
+            proj.cache_read_input_tokens,
+            proj.cost_usd,
+            duration_ms,
+            proj.num_turns,
+            proj.stop_reason,
+            proj.usage_json,
+            finished_at as i64,
+            proj.total_cost_usd,
+            proj.model_usage_json,
+            proj.duration_api_ms,
+            proj.terminal_reason,
         ],
     );
+
+    if let Some(r) = result {
+        let _ = persist_claude_model_usage_breakdown(&conn, run_id, r);
+    }
 }
 
 fn spawn_claude_wait_thread(
@@ -3630,9 +3889,23 @@ fn spawn_claude_wait_thread(
                         guard.snapshot.finished_at.unwrap_or_else(unix_ms_now),
                         guard.snapshot.started_at,
                         final_text.as_deref(),
-                        guard.usage.as_ref(),
+                        guard.last_result.as_ref(),
                     );
                 }
+
+                let usage = guard
+                    .last_result
+                    .as_ref()
+                    .and_then(|r| r.get("usage").cloned());
+                let total_cost_usd = guard
+                    .last_result
+                    .as_ref()
+                    .and_then(|r| r.get("total_cost_usd"))
+                    .and_then(Value::as_f64);
+                let model_usage = guard
+                    .last_result
+                    .as_ref()
+                    .and_then(|r| r.get("modelUsage").cloned());
 
                 ClaudeRunCompletedPayload {
                     run_id: run_id.clone(),
@@ -3641,7 +3914,9 @@ fn spawn_claude_wait_thread(
                     status: guard.snapshot.status.clone(),
                     finished_at: guard.snapshot.finished_at.unwrap_or_else(unix_ms_now),
                     final_text,
-                    usage: guard.usage.clone(),
+                    usage,
+                    total_cost_usd,
+                    model_usage,
                 }
             };
 
@@ -3866,7 +4141,7 @@ pub async fn start_claude_task_run(
         cancelled: false,
         seq: 0,
         final_text: String::new(),
-        usage: None,
+        last_result: None,
         db_path: run_db_path.clone(),
     }));
 
@@ -3962,6 +4237,8 @@ pub struct ClaudeEventRow {
     pub raw_type: Option<String>,
     pub raw_subtype: Option<String>,
     pub text: Option<String>,
+    /// Original stdout JSON line when the event was parsed from stream-json (large; use sparingly).
+    pub raw_json: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3977,6 +4254,30 @@ pub struct ClaudeResultRow {
     pub duration_ms: Option<i64>,
     pub num_turns: Option<i64>,
     pub stop_reason: Option<String>,
+    pub total_cost_usd: Option<f64>,
+    pub model_usage_json: Option<String>,
+    pub duration_api_ms: Option<i64>,
+    pub terminal_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaudeRunModelUsageRow {
+    pub model_name: String,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub cache_read_input_tokens: Option<i64>,
+    pub cache_creation_input_tokens: Option<i64>,
+    pub web_search_requests: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub context_window: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskClaudeCostRow {
+    pub task_id: i64,
+    pub total_cost_usd: f64,
+    pub run_count: i64,
 }
 
 #[tauri::command]
@@ -4025,7 +4326,7 @@ pub fn get_claude_session_events(
     let conn = open_db(&state)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, run_id, seq, ts, kind, raw_type, raw_subtype, text
+            "SELECT id, run_id, seq, ts, kind, raw_type, raw_subtype, text, raw_json
              FROM claude_events
              WHERE run_id = ?1
              ORDER BY seq ASC",
@@ -4043,6 +4344,7 @@ pub fn get_claude_session_events(
                 raw_type: row.get(5)?,
                 raw_subtype: row.get(6)?,
                 text: row.get(7)?,
+                raw_json: row.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -4063,9 +4365,11 @@ pub fn get_claude_session_result(
     conn.query_row(
         "SELECT run_id, result_text, model, input_tokens, output_tokens,
                 cache_creation_input_tokens, cache_read_input_tokens,
-                cost_usd, duration_ms, num_turns, stop_reason
+                cost_usd, duration_ms, num_turns, stop_reason,
+                total_cost_usd, model_usage_json, duration_api_ms, terminal_reason
          FROM claude_results
          WHERE run_id = ?1
+         ORDER BY ts DESC
          LIMIT 1",
         [&run_id],
         |row| {
@@ -4081,11 +4385,84 @@ pub fn get_claude_session_result(
                 duration_ms: row.get(8)?,
                 num_turns: row.get(9)?,
                 stop_reason: row.get(10)?,
+                total_cost_usd: row.get(11)?,
+                model_usage_json: row.get(12)?,
+                duration_api_ms: row.get(13)?,
+                terminal_reason: row.get(14)?,
             })
         },
     )
     .optional()
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_claude_session_model_usage(
+    run_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<ClaudeRunModelUsageRow>, String> {
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT model_name, input_tokens, output_tokens, cache_read_input_tokens,
+                    cache_creation_input_tokens, web_search_requests, cost_usd,
+                    context_window, max_output_tokens
+             FROM claude_run_model_usage
+             WHERE run_id = ?1
+             ORDER BY model_name ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([&run_id], |row| {
+            Ok(ClaudeRunModelUsageRow {
+                model_name: row.get(0)?,
+                input_tokens: row.get(1)?,
+                output_tokens: row.get(2)?,
+                cache_read_input_tokens: row.get(3)?,
+                cache_creation_input_tokens: row.get(4)?,
+                web_search_requests: row.get(5)?,
+                cost_usd: row.get(6)?,
+                context_window: row.get(7)?,
+                max_output_tokens: row.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn get_claude_cost_totals_by_task(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<TaskClaudeCostRow>, String> {
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.task_id,
+                    SUM(COALESCE(r.total_cost_usd, r.cost_usd, 0.0)) AS total_cost_usd,
+                    COUNT(r.id) AS run_count
+             FROM claude_sessions s
+             INNER JOIN claude_results r ON r.run_id = s.run_id
+             GROUP BY s.task_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(TaskClaudeCostRow {
+                task_id: row.get(0)?,
+                total_cost_usd: row.get(1)?,
+                run_count: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

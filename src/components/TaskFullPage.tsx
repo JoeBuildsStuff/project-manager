@@ -44,6 +44,7 @@ import type {
   ClaudeRunCompletedPayload,
   ClaudeRunErrorPayload,
   ClaudeRunEventPayload,
+  ClaudeRunModelUsageRow,
   ClaudeRunStartedPayload,
   ClaudeSessionRow,
   ClaudeTaskRunSnapshot,
@@ -191,6 +192,7 @@ export default function TaskFullPage({
   const [historyEvents, setHistoryEvents] = useState<ClaudeEventRow[]>([]);
   const [historyResult, setHistoryResult] = useState<ClaudeResultRow | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [modelUsageRows, setModelUsageRows] = useState<ClaudeRunModelUsageRow[]>([]);
 
   // Keep ref in sync for use inside event listeners
   useEffect(() => {
@@ -222,6 +224,21 @@ export default function TaskFullPage({
   useEffect(() => {
     void loadRunHistory();
   }, [loadRunHistory]);
+
+  const loadModelUsageForRun = useCallback(async (rid: string | null) => {
+    if (!rid) {
+      setModelUsageRows([]);
+      return;
+    }
+    try {
+      const rows = await invoke<ClaudeRunModelUsageRow[]>("get_claude_session_model_usage", {
+        runId: rid,
+      });
+      setModelUsageRows(rows);
+    } catch {
+      setModelUsageRows([]);
+    }
+  }, []);
 
   // -- Event listeners (use ref to avoid stale closure) --
   useEffect(() => {
@@ -487,9 +504,30 @@ export default function TaskFullPage({
     viewingHistory
       ? historyResult?.model ?? selectedHistorySession?.model ?? null
       : runResult?.model ?? selectedModel;
+
+  const visibleRunId = viewingHistory ? selectedHistoryId : runId;
+
+  const estimatedCostUsd = estimateCostUsd(
+    visibleModel,
+    visibleResult?.input_tokens,
+    visibleResult?.output_tokens,
+  );
   const visibleCostUsd =
+    visibleResult?.total_cost_usd ??
     visibleResult?.cost_usd ??
-    estimateCostUsd(visibleModel, visibleResult?.input_tokens, visibleResult?.output_tokens);
+    estimatedCostUsd;
+
+  const costKindLabel = useMemo(() => {
+    if (visibleResult?.total_cost_usd != null) return "API total";
+    if (visibleResult?.cost_usd != null) return "API";
+    if (estimatedCostUsd != null) return "Estimate";
+    return null;
+  }, [visibleResult?.total_cost_usd, visibleResult?.cost_usd, estimatedCostUsd]);
+
+  useEffect(() => {
+    void loadModelUsageForRun(visibleRunId);
+  }, [visibleRunId, runResult?.run_id, historyResult?.run_id, loadModelUsageForRun]);
+
   const visibleFinalSummary = viewingHistory ? selectedHistorySession?.final_text ?? null : runSummary;
 
   // -- Render --
@@ -765,43 +803,88 @@ export default function TaskFullPage({
 
                 {/* Token / cost display after completion */}
                 {visibleResult && (
-                  <div className="flex flex-wrap gap-3 rounded-md border bg-muted/30 px-3 py-2 text-xs">
-                    {visibleResult.input_tokens != null && (
-                      <div className="flex items-center gap-1.5">
-                        <Zap className="h-3 w-3 text-muted-foreground" />
-                        <span className="text-muted-foreground">In:</span>
-                        <span className="font-medium">{formatTokens(visibleResult.input_tokens)}</span>
-                      </div>
-                    )}
-                    {visibleResult.output_tokens != null && (
-                      <div className="flex items-center gap-1.5">
-                        <Zap className="h-3 w-3 text-muted-foreground" />
-                        <span className="text-muted-foreground">Out:</span>
-                        <span className="font-medium">{formatTokens(visibleResult.output_tokens)}</span>
-                      </div>
-                    )}
-                    {visibleCostUsd != null && (
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-muted-foreground">Cost:</span>
-                        <span className="font-medium">${visibleCostUsd.toFixed(4)}</span>
-                      </div>
-                    )}
-                    {visibleResult.duration_ms != null && (
-                      <div className="flex items-center gap-1.5">
-                        <Clock className="h-3 w-3 text-muted-foreground" />
-                        <span className="font-medium">{formatDuration(visibleResult.duration_ms)}</span>
-                      </div>
-                    )}
-                    {visibleResult.num_turns != null && (
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-muted-foreground">Turns:</span>
-                        <span className="font-medium">{visibleResult.num_turns}</span>
-                      </div>
-                    )}
-                    {visibleModel && (
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-muted-foreground">Model:</span>
-                        <span className="font-medium font-mono">{visibleModel}</span>
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap gap-3 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+                      {visibleResult.input_tokens != null && (
+                        <div className="flex items-center gap-1.5">
+                          <Zap className="h-3 w-3 text-muted-foreground" />
+                          <span className="text-muted-foreground">In:</span>
+                          <span className="font-medium">{formatTokens(visibleResult.input_tokens)}</span>
+                        </div>
+                      )}
+                      {visibleResult.output_tokens != null && (
+                        <div className="flex items-center gap-1.5">
+                          <Zap className="h-3 w-3 text-muted-foreground" />
+                          <span className="text-muted-foreground">Out:</span>
+                          <span className="font-medium">{formatTokens(visibleResult.output_tokens)}</span>
+                        </div>
+                      )}
+                      {visibleCostUsd != null && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-muted-foreground">
+                            {costKindLabel ? `${costKindLabel} · ` : ""}Cost:
+                          </span>
+                          <span className="font-medium">${visibleCostUsd.toFixed(4)}</span>
+                        </div>
+                      )}
+                      {visibleResult.duration_ms != null && (
+                        <div className="flex items-center gap-1.5">
+                          <Clock className="h-3 w-3 text-muted-foreground" />
+                          <span className="text-muted-foreground">Wall:</span>
+                          <span className="font-medium">{formatDuration(visibleResult.duration_ms)}</span>
+                        </div>
+                      )}
+                      {visibleResult.duration_api_ms != null && (
+                        <div className="flex items-center gap-1.5">
+                          <Clock className="h-3 w-3 text-muted-foreground" />
+                          <span className="text-muted-foreground">API:</span>
+                          <span className="font-medium">{formatDuration(visibleResult.duration_api_ms)}</span>
+                        </div>
+                      )}
+                      {visibleResult.num_turns != null && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-muted-foreground">Turns:</span>
+                          <span className="font-medium">{visibleResult.num_turns}</span>
+                        </div>
+                      )}
+                      {visibleResult.terminal_reason && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-muted-foreground">Terminal:</span>
+                          <span className="font-medium">{visibleResult.terminal_reason}</span>
+                        </div>
+                      )}
+                      {visibleModel && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-muted-foreground">Model:</span>
+                          <span className="font-medium font-mono">{visibleModel}</span>
+                        </div>
+                      )}
+                    </div>
+                    {modelUsageRows.length > 0 && (
+                      <div className="overflow-x-auto rounded-md border bg-muted/20 px-3 py-2 text-[11px]">
+                        <div className="mb-1.5 font-semibold text-muted-foreground">Per-model usage</div>
+                        <table className="w-full border-collapse text-left font-mono">
+                          <thead>
+                            <tr className="border-b text-muted-foreground">
+                              <th className="py-1 pr-3 font-medium">Model</th>
+                              <th className="py-1 pr-3 font-medium">In</th>
+                              <th className="py-1 pr-3 font-medium">Out</th>
+                              <th className="py-1 pr-3 font-medium">$</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {modelUsageRows.map((row) => (
+                              <tr key={row.model_name} className="border-b border-border/50 last:border-0">
+                                <td className="py-1 pr-3 align-top">{row.model_name}</td>
+                                <td className="py-1 pr-3 align-top">{formatTokens(row.input_tokens)}</td>
+                                <td className="py-1 pr-3 align-top">{formatTokens(row.output_tokens)}</td>
+                                <td className="py-1 pr-3 align-top">
+                                  {row.cost_usd != null ? `$${row.cost_usd.toFixed(4)}` : "\u2014"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
                     )}
                   </div>

@@ -156,6 +156,8 @@ pub fn run() {
             get_claude_sessions_for_task,
             get_claude_session_events,
             get_claude_session_result,
+            get_claude_session_model_usage,
+            get_claude_cost_totals_by_task,
             list_notes_documents,
             get_notes_document_by_id,
             create_notes_document,

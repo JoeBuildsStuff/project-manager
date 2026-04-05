@@ -250,11 +250,9 @@ export function ProjectDetailContent({
 
         {actionError && <p className="text-xs text-destructive mt-3">{actionError}</p>}
 
-        <Separator className="my-6" />
-
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
           {/* Left column */}
-          <div className="space-y-6">
+          <div className="space-y-6 mt-3">
             <div>
               <SectionLabel>Details</SectionLabel>
               {detailFields}
@@ -268,7 +266,7 @@ export function ProjectDetailContent({
           </div>
 
           {/* Right column */}
-          <div className="space-y-6">
+          <div className="space-y-6 mt-3">
             {gitBlock}
             {deploymentBlock && (
               <>
@@ -298,8 +296,6 @@ export function ProjectDetailContent({
 
       {actionError && <p className="text-xs text-destructive">{actionError}</p>}
 
-      <Separator />
-
       <div>
         <SectionLabel>Details</SectionLabel>
         {detailFields}
@@ -307,7 +303,6 @@ export function ProjectDetailContent({
 
       {repoBlock && (
         <>
-          <Separator />
           {repoBlock}
         </>
       )}
@@ -317,7 +312,6 @@ export function ProjectDetailContent({
 
       {deploymentBlock && (
         <>
-          <Separator />
           {deploymentBlock}
         </>
       )}
