@@ -33,3 +33,6 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/
+
+#other files
+docs/roadmap/log-db-agent-runs/db-disparity/

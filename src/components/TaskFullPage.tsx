@@ -5,6 +5,9 @@ import {
   ArrowLeft,
   Bot,
   Clock,
+  Folder,
+  Hash,
+  Kanban,
   Loader2,
   Play,
   Square,
@@ -26,7 +29,6 @@ import {
 } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
 import {
   ANTHROPIC_MODEL_OPTIONS,
   DEFAULT_ANTHROPIC_MODEL,
@@ -173,9 +175,6 @@ export default function TaskFullPage({
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const selectedModelLabel =
     CLAUDE_MODEL_OPTIONS.find((o) => o.value === selectedModel)?.label ?? "Model";
-
-  // -- Claude spawn: pass API key env to child (off = strip key, favors subscription CLI auth) --
-  const [passAnthropicApiKey, setPassAnthropicApiKey] = useState(false);
 
   // -- Live run state --
   const runIdRef = useRef<string | null>(null);
@@ -416,7 +415,6 @@ export default function TaskFullPage({
       const started = await invoke<ClaudeRunStartedPayload>("start_claude_task_run", {
         taskId: task.id,
         model: selectedModel,
-        passAnthropicApiKey,
       });
       runIdRef.current = started.run_id;
       setRunId(started.run_id);
@@ -540,19 +538,31 @@ export default function TaskFullPage({
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Header */}
-      <div className="flex items-center gap-3 border-b px-6 py-3 shrink-0">
+      <div className="flex items-center p-1 shrink-0">
         <SidebarTrigger className="-ml-1 shrink-0" />
         <Button variant="ghost" size="sm" className="gap-1.5 h-7 text-xs" onClick={onBack}>
           <ArrowLeft className="h-3.5 w-3.5" />
           Back
         </Button>
-        <div className="h-4 w-px bg-border" />
+        <div className="mr-2 h-4 w-px bg-border" />
         <div className="min-w-0">
-          <h1 className="truncate text-base font-semibold">{task.title}</h1>
-          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-            <span>#{task.id}</span>
-            <span>{task.folder_key}</span>
-            {project && <span>{project.folder_name}</span>}
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Badge variant="outline">
+            Task
+              <Hash className="h-4 w-4" />
+              {task.id}
+            </Badge>
+            in
+          {project && (
+              <Badge variant="outline">
+                <Kanban className="h-4 w-4" />
+                {project.folder_name}
+              </Badge>
+            )}
+            <Badge variant="outline">
+              <Folder className="h-4 w-4" />
+              {task.folder_key}
+            </Badge>
           </div>
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -564,7 +574,7 @@ export default function TaskFullPage({
 
       {/* Body */}
       <div className="min-h-0 flex-1">
-        <div className="grid h-full min-h-0 gap-4 p-4 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
+        <div className="grid h-full min-h-0 gap-2 px-2 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
           {/* Left panel: Task editing */}
           <ScrollArea className="min-h-0 rounded-lg border">
             <div className="space-y-5 p-5">
@@ -737,15 +747,18 @@ export default function TaskFullPage({
           <div className="min-h-0 flex flex-col gap-4">
             {/* Run control card */}
             <Card className="shrink-0">
-              <CardHeader className="pb-3">
+              <CardHeader>
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <CardTitle className="flex items-center gap-2 text-sm">
-                      <Bot className="h-4 w-4" />
-                      Claude Run
+                    <CardTitle>
+                      Claude Agent
                     </CardTitle>
-                    <CardDescription>
-                      Run Claude Code directly in <span className="font-mono text-[11px]">{task.folder_key}</span>.
+                    <CardDescription className="items-center text-center">
+                      Run Claude Code directly in{" "}             
+                      <Badge variant="outline">
+                        <Folder className="h-4 w-4" />
+                        {task.folder_key}
+                      </Badge>
                     </CardDescription>
                   </div>
                   <Badge variant="outline" className={cn("capitalize", StatusBadgeColor(runStatus))}>
@@ -763,7 +776,7 @@ export default function TaskFullPage({
                   </div>
                 )}
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
                   {/* Model selector */}
                   <Select
@@ -771,7 +784,7 @@ export default function TaskFullPage({
                     onValueChange={(v) => { if (v) setSelectedModel(v); }}
                     disabled={isRunActive}
                   >
-                    <SelectTrigger className="w-fit h-8 border text-xs text-muted-foreground">
+                    <SelectTrigger className="">
                       <SelectValue placeholder="Model">{selectedModelLabel}</SelectValue>
                     </SelectTrigger>
                     <SelectContent>
@@ -798,23 +811,6 @@ export default function TaskFullPage({
                   <Button variant="ghost" size="sm" onClick={handleRefreshRunState} disabled={!runId}>
                     Refresh
                   </Button>
-                </div>
-
-                <div className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
-                  <div className="min-w-0 space-y-0.5">
-                    <div className="text-xs font-medium text-foreground">Pass ANTHROPIC_API_KEY</div>
-                    <p className="text-[11px] leading-snug text-muted-foreground">
-                      Off (default): the Claude process does not receive the variable—often matches Pro/Max CLI login. On:
-                      inherit it from this app (API usage). Each spawn prints a line to the dev terminal.
-                    </p>
-                  </div>
-                  <Switch
-                    size="sm"
-                    className="shrink-0 mt-0.5"
-                    checked={passAnthropicApiKey}
-                    onCheckedChange={(checked) => setPassAnthropicApiKey(checked)}
-                    disabled={isRunActive}
-                  />
                 </div>
 
                 {/* Run metadata */}

@@ -3928,16 +3928,40 @@ fn spawn_claude_wait_thread(
     });
 }
 
-/// Starts `claude -p` in the task repo. When `pass_anthropic_api_key` is false or omitted,
-/// `ANTHROPIC_API_KEY` is stripped from the child environment so CLI/subscription auth can win.
+/// Anthropic Console API key from app keychain (Settings → Anthropic). Required for Claude Code runs.
+fn anthropic_api_key_for_claude_code(cache: &TokenCache) -> Result<String, String> {
+    const SECRET_KEY: &str = "anthropic_api_key";
+    let guard = cache.cache.lock().map_err(|e| e.to_string())?;
+    if let Some(k) = guard.get(SECRET_KEY).cloned() {
+        return Ok(k);
+    }
+    drop(guard);
+    let entry = keyring::Entry::new(KEYRING_SERVICE, SECRET_KEY).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(k) => {
+            cache
+                .cache
+                .lock()
+                .map_err(|e| e.to_string())?
+                .insert(SECRET_KEY.to_string(), k.clone());
+            Ok(k)
+        }
+        Err(keyring::Error::NoEntry) => Err(
+            "No Anthropic API key configured. Add your Claude Console API key in Settings.".into(),
+        ),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Starts `claude -p` in the task repo using the Claude Console API key from Settings (not OAuth / subscription CLI auth).
 #[tauri::command]
 pub async fn start_claude_task_run(
     task_id: i64,
     model: Option<String>,
-    pass_anthropic_api_key: Option<bool>,
     app: tauri::AppHandle,
     state: tauri::State<'_, WorkspaceState>,
     runs: tauri::State<'_, ClaudeRunState>,
+    cache: tauri::State<'_, TokenCache>,
 ) -> Result<ClaudeRunStartedPayload, String> {
     // -----------------------------------------------------------------------
     // Gather everything we need from State BEFORE the first .await so that
@@ -3952,7 +3976,6 @@ pub async fn start_claude_task_run(
 
     // Normalize model: treat empty string as None (use CLI default)
     let model = model.filter(|m| !m.trim().is_empty());
-    let pass_anthropic_api_key = pass_anthropic_api_key.unwrap_or(false);
 
     {
         let conn = open_db(&state)?;
@@ -3991,13 +4014,19 @@ pub async fn start_claude_task_run(
         // conn is dropped here — no longer held across await
     }
 
+    let anthropic_api_key = match anthropic_api_key_for_claude_code(&cache) {
+        Ok(k) => k,
+        Err(message) => {
+            emit_claude_run_error(&app, None, Some(task_id), "preflight", &message);
+            return Err(message);
+        }
+    };
+
     // -----------------------------------------------------------------------
-    // Preflight checks — run on a blocking thread so we don't freeze the UI.
-    // `claude --version` and `claude auth status` each spawn a Node.js process
-    // which can take 1-3 seconds; doing this on the main thread beach-balls.
+    // Preflight — `claude --version` spawns a Node.js process; keep off the UI thread.
     // -----------------------------------------------------------------------
     let preflight_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         Command::new("claude")
             .arg("--version")
             .output()
@@ -4006,27 +4035,6 @@ pub async fn start_claude_task_run(
                 emit_claude_run_error(&preflight_app, None, Some(task_id), "preflight", &message);
                 message
             })?;
-
-        let auth_output = Command::new("claude")
-            .args(["auth", "status"])
-            .output()
-            .map_err(|e| {
-                let message = format!("Failed to check Claude auth status: {e}");
-                emit_claude_run_error(&preflight_app, None, Some(task_id), "preflight", &message);
-                message
-            })?;
-        if !auth_output.status.success() {
-            let stderr_text = String::from_utf8_lossy(&auth_output.stderr).trim().to_string();
-            let stdout_text = String::from_utf8_lossy(&auth_output.stdout).trim().to_string();
-            let detail = if !stderr_text.is_empty() { stderr_text } else { stdout_text };
-            let message = if detail.is_empty() {
-                "Claude CLI is not authenticated. Run `claude auth login` first.".to_string()
-            } else {
-                format!("Claude CLI is not authenticated: {detail}")
-            };
-            emit_claude_run_error(&preflight_app, None, Some(task_id), "preflight", &message);
-            return Err(message);
-        }
         Ok(())
     })
     .await
@@ -4041,16 +4049,10 @@ pub async fn start_claude_task_run(
     let spawn_run_id = run_id.clone();
     let spawn_prompt = prompt.clone();
     let spawn_app = app.clone();
-    let spawn_pass_api_key = pass_anthropic_api_key;
+    let spawn_api_key = anthropic_api_key.clone();
 
     let (child_proc, pid, child_stdout, child_stderr) =
         tauri::async_runtime::spawn_blocking(move || {
-            let parent_has_api_key = env::var_os("ANTHROPIC_API_KEY").is_some();
-            let child_will_receive_key = spawn_pass_api_key && parent_has_api_key;
-            println!(
-                "[start_claude_task_run] Claude spawn env: ANTHROPIC_API_KEY set in app process: {parent_has_api_key} | pass_to_child: {spawn_pass_api_key} | child sees key: {child_will_receive_key}"
-            );
-
             let mut cmd = Command::new("claude");
             cmd.arg("-p")
                 .arg(&spawn_prompt)
@@ -4063,9 +4065,9 @@ pub async fn start_claude_task_run(
                 cmd.arg("--model").arg(m);
             }
 
-            if !spawn_pass_api_key {
-                cmd.env_remove("ANTHROPIC_API_KEY");
-            }
+            // Console API key only (Anthropic ToS: third-party apps must not route via Claude.ai OAuth for users).
+            cmd.env("ANTHROPIC_API_KEY", &spawn_api_key)
+                .env_remove("ANTHROPIC_AUTH_TOKEN");
 
             let mut child = cmd
                 .current_dir(&spawn_cwd)
