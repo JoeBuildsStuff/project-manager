@@ -28,6 +28,8 @@ import {
   Milestone,
   Star,
   Play,
+  Plus,
+  SearchX,
 } from "lucide-react";
 import {
   Table,
@@ -74,7 +76,7 @@ interface Props {
   search: string;
   onSearch: (v: string) => void;
   onSync: () => void;
-  onNewProject: () => void;
+  onNewProject: (initialName?: string) => void;
   syncing: boolean;
   loading: boolean;
   syncMsg: string;
@@ -773,8 +775,32 @@ export default function ProjectTable({
           ))}
         </div>
       ) : projects.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-          No projects match the current filter.
+        <div className="flex flex-1 items-center justify-center px-6">
+          <div className="flex max-w-md flex-col items-center gap-3 text-center">
+            <div className="rounded-full border border-border p-3 text-muted-foreground">
+              <SearchX className="h-5 w-5" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-sm font-medium text-foreground">
+                No projects found
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                {search.trim()
+                  ? <>No project matches <span className="font-mono text-foreground">{search.trim()}</span>.</>
+                  : "No projects match the current filter."}
+              </p>
+            </div>
+            {search.trim() && (
+              <Button
+                size="sm"
+                className="gap-1.5"
+                onClick={() => onNewProject(search.trim())}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Create project "{search.trim()}"
+              </Button>
+            )}
+          </div>
         </div>
       ) : (
         <div className="mt-1 min-h-0 flex-1 overflow-auto rounded-md border border-border">

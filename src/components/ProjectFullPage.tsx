@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -56,6 +56,22 @@ export default function ProjectFullPage({
           {p.stage && <StageBadge stage={p.stage} />}
           {p.host && <HostBadge host={p.host} />}
           {p.deploy_platform && <DeployBadge platform={p.deploy_platform} />}
+          {(p.production_url || p.vercel_project_name) && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1 h-6 text-xs px-2"
+              onClick={() => {
+                const url = p.production_url
+                  ? p.production_url
+                  : `https://vercel.com/${p.vercel_team_slug ?? ""}/${p.vercel_project_name}`;
+                window.open(url, "_blank");
+              }}
+            >
+              <ExternalLink className="h-3 w-3" />
+              {p.production_url ? "Production" : "Vercel"}
+            </Button>
+          )}
         </div>
       </div>
 

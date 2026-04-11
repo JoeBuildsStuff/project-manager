@@ -1,4 +1,4 @@
-import { Check, File, FolderOpen, Kanban, Settings, Star, Terminal } from "lucide-react";
+import { Bot, Check, File, FolderOpen, Kanban, Settings, Star, Terminal } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -24,6 +24,7 @@ export interface AppSidebarProps {
   onJumpToTasks?: () => void;
   onJumpToNotes?: () => void;
   onJumpToTerminal?: () => void;
+  onJumpToAgent?: () => void;
   activeView?: string;
   taskProject?: Project | null;
   notesList?: NotesDocumentSummary[];
@@ -44,6 +45,7 @@ export default function AppSidebar({
   onJumpToTasks,
   onJumpToNotes,
   onJumpToTerminal,
+  onJumpToAgent,
   activeView,
   taskProject = null,
   notesList = [],
@@ -104,6 +106,17 @@ export default function AppSidebar({
                 >
                   <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span>Task Table</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  isActive={activeView === "agent"}
+                  onClick={onJumpToAgent}
+                  className="w-full"
+                  tooltip="Agent"
+                >
+                  <Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span>Agent</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               <SidebarMenuItem>

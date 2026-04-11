@@ -13,6 +13,7 @@ import Settings from "./components/Settings";
 import TaskTable from "./components/TaskTable";
 import Notes from "./components/Notes";
 import Terminal from "./components/Terminal";
+import Agent from "./components/Agent";
 import ProjectFullPage from "./components/ProjectFullPage";
 import TaskFullPage from "./components/TaskFullPage";
 import { perfStart, perfEnd } from "./lib/perf";
@@ -46,7 +47,7 @@ interface DiffStat {
   lines_removed: number | null;
 }
 
-type View = "projects" | "settings" | "tasks" | "notes" | "terminal" | "project-detail" | "task-detail";
+type View = "projects" | "settings" | "tasks" | "notes" | "terminal" | "agent" | "project-detail" | "task-detail";
 
 const NOTES_SELECTED_KEY = "pm-selected-note-id";
 
@@ -60,6 +61,7 @@ export default function App() {
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<Project | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectInitialName, setNewProjectInitialName] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -415,6 +417,10 @@ export default function App() {
     setView("terminal");
   };
 
+  const handleJumpToAgent = () => {
+    setView("agent");
+  };
+
   const handleOpenFullPage = (project: Project) => {
     setRecentProjectKeys(recordRecentProjectAccess(project.folder_key));
     setSelected(project);
@@ -496,6 +502,7 @@ export default function App() {
           onJumpToTasks={handleJumpToTasks}
           onJumpToNotes={handleJumpToNotes}
           onJumpToTerminal={handleJumpToTerminal}
+          onJumpToAgent={handleJumpToAgent}
           activeView={view}
           taskProject={taskProject}
           notesList={notesList}
@@ -537,6 +544,10 @@ export default function App() {
             ) : view === "terminal" ? (
               <div id="terminal" tabIndex={-1} className="m-2 mb-0 min-h-0 flex-1 outline-none">
                 <Terminal />
+              </div>
+            ) : view === "agent" ? (
+              <div id="agent" tabIndex={-1} className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                <Agent />
               </div>
             ) : view === "project-detail" && fullPageProject ? (
               <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
@@ -608,7 +619,10 @@ export default function App() {
                   search={search}
                   onSearch={setSearch}
                   onSync={handleSync}
-                  onNewProject={() => setNewProjectOpen(true)}
+                  onNewProject={(initialName) => {
+                    setNewProjectInitialName(initialName ?? "");
+                    setNewProjectOpen(true);
+                  }}
                   syncing={syncing}
                   loading={loading}
                   syncMsg={syncMsg}
@@ -628,8 +642,21 @@ export default function App() {
 
         <NewProjectDialog
           open={newProjectOpen}
-          onOpenChange={setNewProjectOpen}
-          onCreated={load}
+          onOpenChange={(open) => {
+            setNewProjectOpen(open);
+            if (!open) {
+              setNewProjectInitialName("");
+            }
+          }}
+          initialName={newProjectInitialName}
+          onCreated={async (folderKey) => {
+            await load();
+            loadTaskCounts();
+            const created = await invoke<Project | null>("get_project", { folderKey });
+            if (created) {
+              handleOpenFullPage(created);
+            }
+          }}
         />
       </SidebarProvider>
 

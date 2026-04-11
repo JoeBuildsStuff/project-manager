@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PlusCircle } from "lucide-react";
 import {
@@ -24,7 +24,8 @@ import {
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreated: () => void;
+  onCreated: (folderKey: string) => void | Promise<void>;
+  initialName?: string;
 }
 
 const CATEGORIES = [
@@ -37,13 +38,24 @@ const STATUSES = ["inbox", "active", "archived"];
 
 const SLUG_RE = /[^a-z0-9-]/g;
 
-export default function NewProjectDialog({ open, onOpenChange, onCreated }: Props) {
+export default function NewProjectDialog({
+  open,
+  onOpenChange,
+  onCreated,
+  initialName = "",
+}: Props) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState("project");
   const [status, setStatus] = useState("inbox");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setName(initialName);
+    setError("");
+  }, [initialName, open]);
 
   const slug = name.toLowerCase().replace(/ /g, "-").replace(SLUG_RE, "");
   const folderKey = slug || "";
@@ -76,7 +88,7 @@ export default function NewProjectDialog({ open, onOpenChange, onCreated }: Prop
         category,
         description: description.trim() || null,
       });
-      onCreated();
+      await onCreated(folderKey);
       handleClose(false);
     } catch (e) {
       setError(String(e));
