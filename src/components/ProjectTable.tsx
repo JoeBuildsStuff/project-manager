@@ -837,34 +837,65 @@ export default function ProjectTable({
               ))}
             </TableHeader>
             <TableBody>
-              {table.getRowModel().rows.map((row) => {
-                const p = row.original;
-                return (
-                  <TableRow
-                    key={row.id}
-                    data-state={row.getIsSelected() ? "selected" : undefined}
-                    className={cn(
-                      "cursor-pointer",
-                      selected?.folder_key === p.folder_key && "bg-accent/20",
-                    )}
-                    onClick={() => onSelect(p)}
+              {table.getRowModel().rows.length === 0 ? (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell
+                    colSpan={table.getHeaderGroups()[0]?.headers.length ?? 1}
+                    className="h-28 text-center"
                   >
-                    {row.getVisibleCells().map((cell) => (
-                      <TableCell
-                        key={cell.id}
-                        className={cn(
-                          cell.column.id === "select"           && "pl-3",
-                          cell.column.id === "folder_name"      && "pl-2",
-                          cell.column.id === "star"             && "px-0",
-                          cell.column.id === "last_commit_date" && "pr-4",
-                        )}
-                      >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                );
-              })}
+                    <div className="flex flex-col items-center justify-center gap-2 py-2">
+                      <p className="text-sm text-muted-foreground">
+                        No projects match the current table filters.
+                      </p>
+                      {search.trim() ? (
+                        <Button
+                          size="sm"
+                          className="gap-1.5"
+                          onClick={() => onNewProject(search.trim())}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          Create project &quot;{search.trim()}&quot;
+                        </Button>
+                      ) : (
+                        <p className="max-w-sm text-xs text-muted-foreground">
+                          Clear column filters or adjust search to see projects, or use{" "}
+                          <span className="font-medium text-foreground">New project</span>{" "}
+                          in the toolbar.
+                        </p>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                table.getRowModel().rows.map((row) => {
+                  const p = row.original;
+                  return (
+                    <TableRow
+                      key={row.id}
+                      data-state={row.getIsSelected() ? "selected" : undefined}
+                      className={cn(
+                        "cursor-pointer",
+                        selected?.folder_key === p.folder_key && "bg-accent/20",
+                      )}
+                      onClick={() => onSelect(p)}
+                    >
+                      {row.getVisibleCells().map((cell) => (
+                        <TableCell
+                          key={cell.id}
+                          className={cn(
+                            cell.column.id === "select"           && "pl-3",
+                            cell.column.id === "folder_name"      && "pl-2",
+                            cell.column.id === "star"             && "px-0",
+                            cell.column.id === "last_commit_date" && "pr-4",
+                          )}
+                        >
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  );
+                })
+              )}
             </TableBody>
           </Table>
         </div>

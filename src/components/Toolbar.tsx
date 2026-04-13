@@ -21,7 +21,7 @@ interface Props {
   search: string;
   onSearch: (v: string) => void;
   onSync: () => void;
-  onNewProject: () => void;
+  onNewProject: (initialName?: string) => void;
   syncing: boolean;
   syncMsg: string;
   syncIsError: boolean;
@@ -60,7 +60,8 @@ export default function Toolbar({
       <Button
         size="icon"
         className="h-7 w-7"
-        onClick={onNewProject}
+        onClick={() => onNewProject(search.trim() || undefined)}
+        title={search.trim() ? `New project (${search.trim()})` : "New project"}
       >
         <Plus />
       </Button>
