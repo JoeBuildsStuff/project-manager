@@ -1196,6 +1196,21 @@ pub struct GitStatus {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct GitActivityDay {
+    pub date: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitActivity {
+    pub folder_key: String,
+    pub has_repo: bool,
+    pub days: Vec<GitActivityDay>,
+    pub total_commits: i64,
+    pub active_days: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DeleteGuardrails {
     pub folder_key: String,
     pub folder_name: String,
@@ -2317,6 +2332,73 @@ pub fn get_git_status(
         folder_key,
         output: stdout,
         is_dirty,
+    })
+}
+
+#[tauri::command]
+pub fn get_git_activity(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<GitActivity, String> {
+    let path = workspace_path(&state, &folder_key)?;
+    let Some(repo_path) = repo_path_for_folder(&path) else {
+        return Ok(GitActivity {
+            folder_key,
+            has_repo: false,
+            days: Vec::new(),
+            total_commits: 0,
+            active_days: 0,
+        });
+    };
+
+    let output = Command::new("git")
+        .args([
+            "-C",
+            repo_path.to_str().ok_or_else(|| "Invalid repository path".to_string())?,
+            "log",
+            "--since=370 days ago",
+            "--date=short",
+            "--pretty=format:%ad",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !output.status.success() {
+        return Ok(GitActivity {
+            folder_key,
+            has_repo: true,
+            days: Vec::new(),
+            total_commits: 0,
+            active_days: 0,
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut counts: HashMap<String, i64> = HashMap::new();
+
+    for line in stdout.lines() {
+        let date = line.trim();
+        if date.is_empty() {
+            continue;
+        }
+        *counts.entry(date.to_string()).or_insert(0) += 1;
+    }
+
+    let mut days: Vec<GitActivityDay> = counts
+        .into_iter()
+        .map(|(date, count)| GitActivityDay { date, count })
+        .collect();
+    days.sort_by(|a, b| a.date.cmp(&b.date));
+
+    let total_commits = days.iter().map(|day| day.count).sum();
+    let active_days = days.len() as i64;
+
+    Ok(GitActivity {
+        folder_key,
+        has_repo: true,
+        days,
+        total_commits,
+        active_days,
     })
 }
 

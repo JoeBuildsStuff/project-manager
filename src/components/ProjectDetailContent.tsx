@@ -6,14 +6,16 @@ import {
   ExternalLink,
   GitBranch,
   GitCommit,
+  CheckCircle2,
+  CircleSlash,
   Pencil,
   Trash2,
   Loader2,
   ChevronDown,
+  AlertCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import {
   Popover,
   PopoverContent,
@@ -31,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { CategoryBadge, HostBadge, StatusBadge, StageBadge, DeployBadge } from "./StatusBadge";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import type { Project } from "../types";
+import ProjectActivityHeatmap, { normalizeGitActivity, type GitActivity } from "./ProjectActivityHeatmap";
 
 interface GitStatus {
   folder_key: string;
@@ -70,6 +73,8 @@ export function ProjectDetailContent({
 }: ProjectDetailContentProps) {
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
   const [gitLoading, setGitLoading] = useState(false);
+  const [gitActivity, setGitActivity] = useState<GitActivity | null>(null);
+  const [gitActivityLoading, setGitActivityLoading] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -84,6 +89,16 @@ export function ProjectDetailContent({
       .then(setGitStatus)
       .catch(() => setGitStatus(null))
       .finally(() => setGitLoading(false));
+  }, [p.folder_key, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setGitActivity(null);
+    setGitActivityLoading(true);
+    invoke<GitActivity>("get_git_activity", { folderKey: p.folder_key })
+      .then((result) => setGitActivity(normalizeGitActivity(result)))
+      .catch(() => setGitActivity(null))
+      .finally(() => setGitActivityLoading(false));
   }, [p.folder_key, isOpen]);
 
   const openWith = (cmd: string, arg: string) =>
@@ -164,55 +179,18 @@ export function ProjectDetailContent({
       <EditableField label="Deploy" value={p.deploy_platform} options={DEPLOY_OPTIONS} onSelect={(v) => handleField("deploy_platform", v)} renderBadge={(v) => <DeployBadge platform={v} />} clearable />
       <EditableTextField label="Prod URL" value={p.production_url} placeholder="https://example.com" onSave={handleProductionUrl} />
       <Field label="Owner" value={p.repo_owner} />
+      <RepoField project={p} />
+      <GitStatusField
+        gitLoading={gitLoading}
+        gitStatus={gitStatus}
+        onOpenRepo={p.repo?.startsWith("http") ? () => openWith("open_url", p.repo as string) : undefined}
+      />
       {p.vercel_project_name && <Field label="Vercel" value={p.vercel_project_name} />}
       <Field label="Commits" value={p.commit_count?.toString()} />
       <Field label="Last commit" value={p.last_commit_date?.split("T")[0]} />
       {p.days_since_last_commit != null && <Field label="Days ago" value={p.days_since_last_commit.toString()} />}
+      {p.deployment && <Field label="Notes" value={p.deployment} />}
     </dl>
-  );
-
-  const gitBlock = (
-    <div>
-      <SectionLabel>
-        <GitCommit className="h-3 w-3" />
-        Git status
-        {gitStatus?.is_dirty && (
-          <Badge variant="yellow" className="ml-1 text-[10px]">dirty</Badge>
-        )}
-      </SectionLabel>
-      <div className="min-h-[32px] rounded-md bg-muted px-2 py-1.5">
-        {gitLoading && (
-          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            Loading…
-          </span>
-        )}
-        {!gitLoading && gitStatus && (
-          gitStatus.output.trim()
-            ? <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-yellow-400">{gitStatus.output}</pre>
-            : <span className="text-[11px] text-muted-foreground">Clean</span>
-        )}
-        {!gitLoading && !gitStatus && (
-          <span className="text-[11px] text-muted-foreground">Not a git repo</span>
-        )}
-      </div>
-    </div>
-  );
-
-  const repoBlock = p.repo && (
-    <div>
-      <SectionLabel>Repo</SectionLabel>
-      <p className="break-all rounded-md bg-muted px-2 py-1.5 font-mono text-[10px] text-muted-foreground">
-        {p.repo}
-      </p>
-    </div>
-  );
-
-  const deploymentBlock = p.deployment && (
-    <div>
-      <SectionLabel>Deployment</SectionLabel>
-      <p className="text-xs leading-relaxed text-muted-foreground">{p.deployment}</p>
-    </div>
   );
 
   const dialogs = (
@@ -250,31 +228,14 @@ export function ProjectDetailContent({
 
         {actionError && <p className="text-xs text-destructive mt-3">{actionError}</p>}
 
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-          {/* Left column */}
-          <div className="space-y-6 mt-3">
-            <div>
-              <SectionLabel>Details</SectionLabel>
-              {detailFields}
-            </div>
-            {repoBlock && (
-              <>
-                <Separator />
-                {repoBlock}
-              </>
-            )}
-          </div>
+        <div className="mt-4">
+          <SectionLabel>Details</SectionLabel>
+          {detailFields}
+        </div>
 
-          {/* Right column */}
-          <div className="space-y-6 mt-3">
-            {gitBlock}
-            {deploymentBlock && (
-              <>
-                <Separator />
-                {deploymentBlock}
-              </>
-            )}
-          </div>
+        <div className="mt-6">
+          <SectionLabel>Activity</SectionLabel>
+          <ProjectActivityHeatmap activity={gitActivity} loading={gitActivityLoading} />
         </div>
 
         {dialogs}
@@ -301,20 +262,10 @@ export function ProjectDetailContent({
         {detailFields}
       </div>
 
-      {repoBlock && (
-        <>
-          {repoBlock}
-        </>
-      )}
-
-      <Separator />
-      {gitBlock}
-
-      {deploymentBlock && (
-        <>
-          {deploymentBlock}
-        </>
-      )}
+      <div>
+        <SectionLabel>Activity</SectionLabel>
+        <ProjectActivityHeatmap activity={gitActivity} loading={gitActivityLoading} />
+      </div>
 
       {dialogs}
     </div>
@@ -539,6 +490,152 @@ export function Field({ label, value }: { label: string; value: React.ReactNode 
       <dd className="min-w-0 break-all text-muted-foreground">{value}</dd>
     </div>
   );
+}
+
+function RepoField({ project }: { project: Project }) {
+  if (!project.repo && !project.repo_owner) return null;
+
+  const repoLabel = project.repo_owner ?? formatRepoUrl(project.repo);
+
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <dt className="w-20 shrink-0 text-muted-foreground/60">Repo</dt>
+      <dd className="min-w-0">
+        <Popover>
+          <PopoverTrigger className="flex max-w-[280px] items-center gap-1.5 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-muted">
+            <GitBranch className="h-3 w-3 text-muted-foreground/50" />
+            <span className="truncate text-muted-foreground">{repoLabel}</span>
+            <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/40" />
+          </PopoverTrigger>
+          <PopoverContent className="w-80 p-3" align="start">
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-foreground">Repository</p>
+                <p className="break-all text-[11px] text-muted-foreground">
+                  {project.repo_owner ?? "Remote connected"}
+                </p>
+              </div>
+              {project.repo && (
+                <div className="rounded-md bg-muted px-2 py-1.5">
+                  <p className="break-all font-mono text-[10px] text-muted-foreground">
+                    {project.repo}
+                  </p>
+                </div>
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </dd>
+    </div>
+  );
+}
+
+function GitStatusField({
+  gitLoading,
+  gitStatus,
+  onOpenRepo,
+}: {
+  gitLoading: boolean;
+  gitStatus: GitStatus | null;
+  onOpenRepo?: () => void;
+}) {
+  const gitOutput = gitStatus?.output.trim() ?? "";
+  const changedFiles = gitOutput ? gitOutput.split("\n").filter(Boolean).length : 0;
+
+  let badge: React.ReactNode;
+  let summary = "";
+
+  if (gitLoading) {
+    badge = (
+      <Badge variant="gray" className="text-[11px] font-medium">
+        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+        loading
+      </Badge>
+    );
+    summary = "Checking repo";
+  } else if (!gitStatus) {
+    badge = (
+      <Badge variant="gray" className="text-[11px] font-medium">
+        <CircleSlash className="h-2.5 w-2.5" />
+        none
+      </Badge>
+    );
+    summary = "Not a git repo";
+  } else if (gitStatus.is_dirty) {
+    badge = (
+      <Badge variant="yellow" className="text-[11px] font-medium">
+        <AlertCircle className="h-2.5 w-2.5" />
+        dirty
+      </Badge>
+    );
+    summary = changedFiles === 1 ? "1 changed file" : `${changedFiles} changed files`;
+  } else {
+    badge = (
+      <Badge variant="green" className="text-[11px] font-medium">
+        <CheckCircle2 className="h-2.5 w-2.5" />
+        clean
+      </Badge>
+    );
+    summary = "No local changes";
+  }
+
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <dt className="w-20 shrink-0 text-muted-foreground/60">Git</dt>
+      <dd className="min-w-0">
+        <Popover>
+          <PopoverTrigger className="flex max-w-[280px] items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-muted">
+            {badge}
+            <span className="truncate text-muted-foreground">{summary}</span>
+            <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/40" />
+          </PopoverTrigger>
+          <PopoverContent className="w-80 p-3" align="start">
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <GitCommit className="h-3.5 w-3.5 text-muted-foreground/60" />
+                <p className="text-xs font-medium text-foreground">Git status</p>
+              </div>
+              {gitLoading && (
+                <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading repository status…
+                </p>
+              )}
+              {!gitLoading && gitStatus && gitOutput && (
+                <div className="rounded-md bg-muted px-2 py-1.5">
+                  <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-yellow-400">
+                    {gitOutput}
+                  </pre>
+                </div>
+              )}
+              {!gitLoading && gitStatus && !gitOutput && (
+                <p className="text-[11px] text-muted-foreground">Working tree is clean.</p>
+              )}
+              {!gitLoading && !gitStatus && (
+                <p className="text-[11px] text-muted-foreground">This project is not backed by a git repository.</p>
+              )}
+              {onOpenRepo && (
+                <div>
+                  <ActionButton icon={<ExternalLink className="h-3.5 w-3.5" />} onClick={onOpenRepo}>
+                    Open remote
+                  </ActionButton>
+                </div>
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </dd>
+    </div>
+  );
+}
+
+function formatRepoUrl(repo: string | null) {
+  if (!repo) return null;
+  return repo
+    .replace(/^https?:\/\//, "")
+    .replace(/^git@/, "")
+    .replace("github.com:", "github.com/")
+    .replace(/\.git$/, "");
 }
 
 export function ActionButton({

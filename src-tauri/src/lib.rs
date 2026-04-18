@@ -143,6 +143,7 @@ pub fn run() {
             open_url,
             sync_workspace,
             get_git_status,
+            get_git_activity,
             get_delete_guardrails,
             get_diff_stats,
             check_for_update,
