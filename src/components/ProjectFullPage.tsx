@@ -6,11 +6,13 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { ProjectDetailContent } from "./ProjectDetailContent";
 import { CategoryBadge, HostBadge, StatusBadge, StageBadge, DeployBadge } from "./StatusBadge";
 import TaskTable from "./TaskTable";
+import Terminal from "./Terminal";
 import type { Project, Task } from "../types";
 
 interface Props {
   project: Project;
   allProjects: Project[];
+  workspacePath: string | null;
   onBack: () => void;
   onFieldChange: (folder_key: string, field: string, value: string | null) => Promise<void>;
   onRename: (folder_key: string, nextName: string) => Promise<void>;
@@ -18,11 +20,12 @@ interface Props {
   onOpenTask: (task: Task) => void;
 }
 
-type Tab = "details" | "tasks";
+type Tab = "details" | "tasks" | "console";
 
 export default function ProjectFullPage({
   project: p,
   allProjects,
+  workspacePath,
   onBack,
   onFieldChange,
   onRename,
@@ -30,6 +33,7 @@ export default function ProjectFullPage({
   onOpenTask,
 }: Props) {
   const [tab, setTab] = useState<Tab>("details");
+  const projectCwd = workspacePath ? `${workspacePath}/${p.folder_key}` : undefined;
 
   const handleDelete = async (folderKey: string) => {
     await onDelete(folderKey);
@@ -79,10 +83,11 @@ export default function ProjectFullPage({
       <div className="flex items-center gap-1 p-1 shrink-0">
         <TabButton active={tab === "details"} onClick={() => setTab("details")}>Details</TabButton>
         <TabButton active={tab === "tasks"} onClick={() => setTab("tasks")}>Tasks</TabButton>
+        <TabButton active={tab === "console"} onClick={() => setTab("console")}>Console</TabButton>
       </div>
 
       {/* Content */}
-      {tab === "details" ? (
+      {tab === "details" && (
         <ScrollArea className="flex-1 min-h-0">
           <div className="p-3 max-w-4xl">
             <ProjectDetailContent
@@ -95,7 +100,8 @@ export default function ProjectFullPage({
             />
           </div>
         </ScrollArea>
-      ) : (
+      )}
+      {tab === "tasks" && (
         <div className="flex-1 min-h-0 m-2 mb-0">
           <TaskTable
             project={p}
@@ -104,6 +110,11 @@ export default function ProjectFullPage({
             onOpenTask={onOpenTask}
             embedded
           />
+        </div>
+      )}
+      {tab === "console" && (
+        <div className="flex-1 min-h-0 m-2 mb-0">
+          <Terminal workingDirectory={projectCwd} hideHeader />
         </div>
       )}
     </div>

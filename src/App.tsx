@@ -554,6 +554,7 @@ export default function App() {
                 <ProjectFullPage
                   project={fullPageProject}
                   allProjects={allProjects}
+                  workspacePath={workspacePath}
                   onBack={handleBackFromFullPage}
                   onFieldChange={handleFieldChange}
                   onRename={async (folderKey, nextName) => {

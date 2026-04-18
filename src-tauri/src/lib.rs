@@ -1,7 +1,9 @@
 mod commands;
 mod config;
+mod pty;
 
 use commands::*;
+use pty::{pty_kill, pty_resize, pty_start, pty_write, PtyState};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -17,6 +19,7 @@ pub fn run() {
         .manage(UpdateState::new())
         .manage(TokenCache::new())
         .manage(ClaudeRunState::new())
+        .manage(PtyState::new())
         .setup(|app| {
             // Build app menu with "Check for Updates..." item
             let check_updates =
@@ -188,6 +191,10 @@ pub fn run() {
             save_table_view,
             delete_table_view,
             execute_terminal_command,
+            pty_start,
+            pty_write,
+            pty_resize,
+            pty_kill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

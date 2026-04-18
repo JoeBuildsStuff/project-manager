@@ -4997,12 +4997,16 @@ pub struct TerminalOutput {
 }
 
 #[tauri::command]
-pub fn execute_terminal_command(command: String) -> Result<TerminalOutput, String> {
-    let output = Command::new("zsh")
-        .arg("-c")
-        .arg(&command)
-        .output()
-        .map_err(|e| e.to_string())?;
+pub fn execute_terminal_command(
+    command: String,
+    cwd: Option<String>,
+) -> Result<TerminalOutput, String> {
+    let mut cmd = Command::new("zsh");
+    cmd.arg("-c").arg(&command);
+    if let Some(dir) = cwd.as_deref().filter(|s| !s.is_empty()) {
+        cmd.current_dir(dir);
+    }
+    let output = cmd.output().map_err(|e| e.to_string())?;
 
     Ok(TerminalOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
