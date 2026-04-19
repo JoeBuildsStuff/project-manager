@@ -18,7 +18,6 @@ pub fn run() {
         .manage(WorkspaceState::new())
         .manage(UpdateState::new())
         .manage(TokenCache::new())
-        .manage(ClaudeRunState::new())
         .manage(PtyState::new())
         .setup(|app| {
             // Build app menu with "Check for Updates..." item
@@ -154,14 +153,6 @@ pub fn run() {
             create_task,
             update_task,
             delete_task,
-            start_claude_task_run,
-            cancel_claude_task_run,
-            get_claude_task_run_state,
-            get_claude_sessions_for_task,
-            get_claude_session_events,
-            get_claude_session_result,
-            get_claude_session_model_usage,
-            get_claude_cost_totals_by_task,
             list_notes_documents,
             get_notes_document_by_id,
             create_notes_document,

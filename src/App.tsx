@@ -597,18 +597,6 @@ export default function App() {
                     await load();
                     loadTaskCounts();
                   }}
-                  onRefreshData={async () => {
-                    await load();
-                    loadTaskCounts();
-                    if (fullPageTask) {
-                      try {
-                        const refreshed = await invoke<Task>("get_task", { id: fullPageTask.id });
-                        setFullPageTask(refreshed);
-                      } catch {
-                        // ignore refresh failures
-                      }
-                    }
-                  }}
                 />
               </div>
             ) : (
