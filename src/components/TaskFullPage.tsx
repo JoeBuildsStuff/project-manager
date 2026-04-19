@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, ChevronDown, Loader2, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronDown, Loader2, Trash } from "lucide-react";
 import Terminal from "./Terminal";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -243,16 +243,16 @@ export default function TaskFullPage({
       <div className="flex min-h-0 flex-1 flex-col gap-2 px-2 pb-2 lg:flex-row lg:gap-3">
         <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col lg:w-[min(420px,42vw)] lg:flex-none">
           <ScrollArea className="h-full min-h-0 rounded-lg border">
-            <div className="space-y-5 p-5">
+            <div className="space-y-5 p-2">
               <div className="flex items-center justify-between">
                 <SectionLabel>Task</SectionLabel>
                 <Button
-                  variant="outline"
+                  variant="destructive"
                   size="sm"
-                  className="h-7 gap-1.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  className=""
                   onClick={() => setDeleteOpen(true)}
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
+                  <Trash className="h-3.5 w-3.5" />
                   Delete
                 </Button>
               </div>
