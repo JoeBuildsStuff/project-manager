@@ -586,6 +586,7 @@ export default function App() {
                 <TaskFullPage
                   task={fullPageTask}
                   project={allProjects.find((project) => project.folder_key === fullPageTask.folder_key) ?? null}
+                  workspacePath={workspacePath}
                   onBack={handleBackFromTaskDetail}
                   onTaskSaved={async (updated) => {
                     setFullPageTask(updated);

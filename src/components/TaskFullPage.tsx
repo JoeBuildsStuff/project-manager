@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, Folder, Hash, Kanban, Loader2, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronDown, Loader2, Trash2 } from "lucide-react";
+import Terminal from "./Terminal";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Input } from "@/components/ui/input";
@@ -8,12 +9,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Dialog,
   DialogContent,
@@ -22,13 +21,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/badge";
 import type { Project, Task } from "@/types";
 import { TaskKindBadge, TaskPriorityBadge, TaskStatusBadge } from "./task-badges";
+
+const TASK_STATUS_OPTIONS = ["open", "in-progress", "done", "closed"] as const;
+const TASK_KIND_OPTIONS = ["task", "issue", "request", "next-step"] as const;
+const TASK_PRIORITY_OPTIONS = ["urgent", "high", "medium", "low"] as const;
 
 interface Props {
   task: Task;
   project: Project | null;
+  workspacePath: string | null;
   onBack: () => void;
   onTaskSaved: (task: Task) => Promise<void> | void;
   onTaskDeleted: (taskId: number) => Promise<void> | void;
@@ -42,13 +45,66 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Same interaction pattern as `EditableField` in `ProjectDetailContent`. */
+function TaskPickField<T extends string>({
+  label,
+  value,
+  options,
+  renderBadge,
+  onSelect,
+}: {
+  label: string;
+  value: T;
+  options: readonly T[];
+  renderBadge: (v: T) => React.ReactNode;
+  onSelect: (v: T) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <dt className="w-20 shrink-0 text-muted-foreground/60">{label}</dt>
+      <dd className="min-w-0">
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger className="flex items-center gap-1 rounded-md px-1 py-0.5 transition-colors hover:bg-muted">
+            {renderBadge(value)}
+            <ChevronDown className="h-3 w-3 text-muted-foreground/40" />
+          </PopoverTrigger>
+          <PopoverContent className="w-44 p-1" align="start">
+            <div className="flex flex-col">
+              {options.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  className={`flex items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-muted ${
+                    opt === value ? "bg-muted font-medium" : ""
+                  }`}
+                  onClick={() => {
+                    onSelect(opt);
+                    setOpen(false);
+                  }}
+                >
+                  {renderBadge(opt)}
+                </button>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </dd>
+    </div>
+  );
+}
+
 export default function TaskFullPage({
   task,
   project,
+  workspacePath,
   onBack,
   onTaskSaved,
   onTaskDeleted,
 }: Props) {
+  const taskCwd = workspacePath ? `${workspacePath}/${task.folder_key}` : undefined;
+
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [status, setStatus] = useState(task.status);
@@ -59,6 +115,45 @@ export default function TaskFullPage({
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
 
+  const stateRef = useRef({
+    title,
+    description,
+    status,
+    kind,
+    priority,
+  });
+  stateRef.current = { title, description, status, kind, priority };
+
+  const textSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const TEXT_SAVE_DEBOUNCE_MS = 500;
+
+  const persistTask = useCallback(
+    async (overrides?: Partial<typeof stateRef.current>) => {
+      const s = { ...stateRef.current, ...overrides };
+      if (!s.title.trim()) return;
+
+      setSaving(true);
+      setError("");
+      try {
+        const updated = await invoke<Task>("update_task", {
+          id: task.id,
+          title: s.title.trim() || null,
+          description: s.description.trim() || null,
+          status: s.status,
+          kind: s.kind,
+          priority: s.priority,
+        });
+        await Promise.resolve(onTaskSaved(updated));
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [task.id, onTaskSaved],
+  );
+
   useEffect(() => {
     setTitle(task.title);
     setDescription(task.description ?? "");
@@ -68,30 +163,43 @@ export default function TaskFullPage({
     setError("");
   }, [task]);
 
-  const hasTaskChanges =
-    title.trim() !== task.title ||
-    description !== (task.description ?? "") ||
-    status !== task.status ||
-    kind !== task.kind ||
-    priority !== (task.priority ?? "medium");
+  useEffect(() => {
+    if (textSaveTimerRef.current) {
+      clearTimeout(textSaveTimerRef.current);
+      textSaveTimerRef.current = null;
+    }
 
-  const handleSave = async () => {
-    setSaving(true);
-    setError("");
-    try {
-      const updated = await invoke<Task>("update_task", {
-        id: task.id,
-        title: title.trim() || null,
-        description: description.trim() || null,
-        status,
-        kind,
-        priority,
-      });
-      await Promise.resolve(onTaskSaved(updated));
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSaving(false);
+    const textDirty =
+      title.trim() !== task.title || description !== (task.description ?? "");
+
+    if (!textDirty || !title.trim()) {
+      return;
+    }
+
+    textSaveTimerRef.current = setTimeout(() => {
+      textSaveTimerRef.current = null;
+      void persistTask();
+    }, TEXT_SAVE_DEBOUNCE_MS);
+
+    return () => {
+      if (textSaveTimerRef.current) {
+        clearTimeout(textSaveTimerRef.current);
+        textSaveTimerRef.current = null;
+      }
+    };
+  }, [
+    title,
+    description,
+    task.title,
+    task.description,
+    task.id,
+    persistTask,
+  ]);
+
+  const clearTextSaveDebounce = () => {
+    if (textSaveTimerRef.current) {
+      clearTimeout(textSaveTimerRef.current);
+      textSaveTimerRef.current = null;
     }
   };
 
@@ -111,164 +219,125 @@ export default function TaskFullPage({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center p-1">
+      <div className="flex shrink-0 items-center gap-2 p-1">
         <SidebarTrigger className="-ml-1 shrink-0" />
         <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-xs" onClick={onBack}>
           <ArrowLeft className="h-3.5 w-3.5" />
           Back
         </Button>
-        <div className="mr-2 h-4 w-px bg-border" />
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Badge variant="outline">
-              Task
-              <Hash className="h-4 w-4" />
-              {task.id}
-            </Badge>
-            in
-            {project && (
-              <Badge variant="outline">
-                <Kanban className="h-4 w-4" />
-                {project.folder_name}
-              </Badge>
-            )}
-            <Badge variant="outline">
-              <Folder className="h-4 w-4" />
-              {task.folder_key}
-            </Badge>
-          </div>
+        <div className="h-4 w-px shrink-0 bg-border" />
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <h1 className="truncate text-base font-semibold">{title.trim() || "Untitled task"}</h1>
+          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+            #{task.id} · {task.folder_key}
+            {project?.folder_name ? ` · ${project.folder_name}` : ""}
+          </span>
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <TaskStatusBadge status={status} />
-          <TaskKindBadge kind={kind} />
-          <TaskPriorityBadge priority={priority} />
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <TaskStatusBadge status={status} appearance="inline" />
+          <TaskKindBadge kind={kind} appearance="inline" />
+          <TaskPriorityBadge priority={priority} appearance="inline" />
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 px-2 pb-2">
-        <ScrollArea className="h-full min-h-0 rounded-lg border">
-          <div className="mx-auto max-w-2xl space-y-5 p-5">
-            <div className="flex items-center justify-between">
-              <SectionLabel>Task</SectionLabel>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 gap-1.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-                onClick={() => setDeleteOpen(true)}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                Delete
-              </Button>
-            </div>
-
-            {error && <p className="text-xs text-destructive">{error}</p>}
-
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">Title</label>
-                <Input
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                  className="mt-1 h-8 text-xs"
-                />
+      <div className="flex min-h-0 flex-1 flex-col gap-2 px-2 pb-2 lg:flex-row lg:gap-3">
+        <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col lg:w-[min(420px,42vw)] lg:flex-none">
+          <ScrollArea className="h-full min-h-0 rounded-lg border">
+            <div className="space-y-5 p-5">
+              <div className="flex items-center justify-between">
+                <SectionLabel>Task</SectionLabel>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={() => setDeleteOpen(true)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete
+                </Button>
               </div>
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">Description</label>
-                <Textarea
-                  rows={8}
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  className="mt-1 resize-none text-xs"
-                  placeholder="Describe the work for this task."
-                />
-              </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+
+              {error && <p className="text-xs text-destructive">{error}</p>}
+
+              <div className="space-y-3">
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Status</label>
-                  <Select value={status} onValueChange={(value) => value && setStatus(value)}>
-                    <SelectTrigger className="mt-1 h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="open">Open</SelectItem>
-                      <SelectItem value="in-progress">In Progress</SelectItem>
-                      <SelectItem value="done">Done</SelectItem>
-                      <SelectItem value="closed">Closed</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <label className="text-xs font-medium text-muted-foreground">Title</label>
+                  <Input
+                    value={title}
+                    onChange={(event) => setTitle(event.target.value)}
+                    className="mt-1 h-8 text-xs"
+                  />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Kind</label>
-                  <Select value={kind} onValueChange={(value) => value && setKind(value)}>
-                    <SelectTrigger className="mt-1 h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="task">Task</SelectItem>
-                      <SelectItem value="issue">Issue</SelectItem>
-                      <SelectItem value="request">Request</SelectItem>
-                      <SelectItem value="next-step">Next Step</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <label className="text-xs font-medium text-muted-foreground">Description</label>
+                  <Textarea
+                    rows={8}
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    className="mt-1 resize-none text-xs"
+                    placeholder="Describe the work for this task."
+                  />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-muted-foreground">Priority</label>
-                  <Select value={priority} onValueChange={(value) => value && setPriority(value)}>
-                    <SelectTrigger className="mt-1 h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="urgent">Urgent</SelectItem>
-                      <SelectItem value="high">High</SelectItem>
-                      <SelectItem value="medium">Medium</SelectItem>
-                      <SelectItem value="low">Low</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <SectionLabel>Details</SectionLabel>
+                  <dl className="space-y-1.5">
+                    <TaskPickField
+                      label="Status"
+                      value={status}
+                      options={Array.from(TASK_STATUS_OPTIONS)}
+                      renderBadge={(v) => <TaskStatusBadge status={v} appearance="inline" />}
+                      onSelect={(v) => {
+                        clearTextSaveDebounce();
+                        setStatus(v);
+                        void persistTask({ status: v });
+                      }}
+                    />
+                    <TaskPickField
+                      label="Kind"
+                      value={kind}
+                      options={Array.from(TASK_KIND_OPTIONS)}
+                      renderBadge={(v) => <TaskKindBadge kind={v} appearance="inline" />}
+                      onSelect={(v) => {
+                        clearTextSaveDebounce();
+                        setKind(v);
+                        void persistTask({ kind: v });
+                      }}
+                    />
+                    <TaskPickField
+                      label="Priority"
+                      value={priority}
+                      options={Array.from(TASK_PRIORITY_OPTIONS)}
+                      renderBadge={(v) => <TaskPriorityBadge priority={v} appearance="inline" />}
+                      onSelect={(v) => {
+                        clearTextSaveDebounce();
+                        setPriority(v);
+                        void persistTask({ priority: v });
+                      }}
+                    />
+                  </dl>
                 </div>
               </div>
-            </div>
 
-            <Separator />
-
-            <div className="space-y-2">
-              <SectionLabel>Project context</SectionLabel>
-              <div className="space-y-1 text-xs text-muted-foreground">
-                <p>
-                  <span className="font-medium text-foreground">Project:</span>{" "}
-                  {project?.folder_name ?? task.folder_name ?? task.folder_key}
-                </p>
-                <p>
-                  <span className="font-medium text-foreground">Folder key:</span> {task.folder_key}
-                </p>
-                <p>
-                  <span className="font-medium text-foreground">Repo:</span>{" "}
-                  {project?.repo ?? "Unknown"}
-                </p>
-              </div>
+              {saving && (
+                <>
+                  <Separator />
+                  <p className="flex items-center gap-1.5 pt-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Saving…
+                  </p>
+                </>
+              )}
             </div>
+          </ScrollArea>
+        </div>
 
-            <div className="flex gap-2 pt-2">
-              <Button
-                size="sm"
-                className="flex-1"
-                onClick={handleSave}
-                disabled={saving || !title.trim() || !hasTaskChanges}
-              >
-                {saving ? (
-                  <>
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  "Save changes"
-                )}
-              </Button>
-              <Button variant="outline" size="sm" className="flex-1" onClick={onBack}>
-                Close
-              </Button>
-            </div>
-          </div>
-        </ScrollArea>
+        <div className="flex min-h-[280px] flex-1 flex-col lg:min-h-0">
+          <Terminal
+            workingDirectory={taskCwd}
+            hideHeader
+            sessionId={`task-pty-${task.id}`}
+          />
+        </div>
       </div>
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>

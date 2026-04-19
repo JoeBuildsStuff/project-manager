@@ -29,7 +29,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { Task } from "../types";
-import { TaskStatusBadge, TaskKindBadge, TaskPriorityBadge } from "./task-badges";
+import {
+  TaskStatusBadge,
+  TaskKindBadge,
+  TaskPriorityBadge,
+  taskFieldSelectTriggerClass,
+} from "./task-badges";
 
 interface Props {
   task: Task | null;
@@ -191,50 +196,75 @@ export default function TaskDetail({
                   <div className="min-w-0">
                     <label className="text-xs font-medium text-muted-foreground">Status</label>
                     <Select value={status} onValueChange={(v) => v && setStatus(v)}>
-                      <SelectTrigger className="mt-1 h-8 text-xs">
-                        <SelectValue />
+                      <SelectTrigger size="sm" className={taskFieldSelectTriggerClass}>
+                        <SelectValue>
+                          <TaskStatusBadge status={status} />
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="open">Open</SelectItem>
-                        <SelectItem value="in-progress">In Progress</SelectItem>
-                        <SelectItem value="done">Done</SelectItem>
-                        <SelectItem value="closed">Closed</SelectItem>
+                        <SelectItem value="open" className="py-1.5 text-xs">
+                          <TaskStatusBadge status="open" />
+                        </SelectItem>
+                        <SelectItem value="in-progress" className="py-1.5 text-xs">
+                          <TaskStatusBadge status="in-progress" />
+                        </SelectItem>
+                        <SelectItem value="done" className="py-1.5 text-xs">
+                          <TaskStatusBadge status="done" />
+                        </SelectItem>
+                        <SelectItem value="closed" className="py-1.5 text-xs">
+                          <TaskStatusBadge status="closed" />
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                   <div className="min-w-0">
                     <label className="text-xs font-medium text-muted-foreground">Kind</label>
                     <Select value={kind} onValueChange={(v) => v && setKind(v)}>
-                      <SelectTrigger className="mt-1 h-8 text-xs">
-                        <SelectValue />
+                      <SelectTrigger size="sm" className={taskFieldSelectTriggerClass}>
+                        <SelectValue>
+                          <TaskKindBadge kind={kind} />
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="task">Task</SelectItem>
-                        <SelectItem value="issue">Issue</SelectItem>
-                        <SelectItem value="request">Request</SelectItem>
-                        <SelectItem value="next-step">Next Step</SelectItem>
+                        <SelectItem value="task" className="py-1.5 text-xs">
+                          <TaskKindBadge kind="task" />
+                        </SelectItem>
+                        <SelectItem value="issue" className="py-1.5 text-xs">
+                          <TaskKindBadge kind="issue" />
+                        </SelectItem>
+                        <SelectItem value="request" className="py-1.5 text-xs">
+                          <TaskKindBadge kind="request" />
+                        </SelectItem>
+                        <SelectItem value="next-step" className="py-1.5 text-xs">
+                          <TaskKindBadge kind="next-step" />
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                   <div className="min-w-0">
                     <label className="text-xs font-medium text-muted-foreground">Priority</label>
                     <Select value={priority} onValueChange={(v) => v && setPriority(v)}>
-                      <SelectTrigger className="mt-1 h-8 text-xs">
-                        <SelectValue />
+                      <SelectTrigger size="sm" className={taskFieldSelectTriggerClass}>
+                        <SelectValue>
+                          <TaskPriorityBadge priority={priority} />
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="urgent">Urgent</SelectItem>
-                        <SelectItem value="high">High</SelectItem>
-                        <SelectItem value="medium">Medium</SelectItem>
-                        <SelectItem value="low">Low</SelectItem>
+                        <SelectItem value="urgent" className="py-1.5 text-xs">
+                          <TaskPriorityBadge priority="urgent" />
+                        </SelectItem>
+                        <SelectItem value="high" className="py-1.5 text-xs">
+                          <TaskPriorityBadge priority="high" />
+                        </SelectItem>
+                        <SelectItem value="medium" className="py-1.5 text-xs">
+                          <TaskPriorityBadge priority="medium" />
+                        </SelectItem>
+                        <SelectItem value="low" className="py-1.5 text-xs">
+                          <TaskPriorityBadge priority="low" />
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <TaskStatusBadge status={status} />
-                  <TaskKindBadge kind={kind} />
-                  <TaskPriorityBadge priority={priority || null} />
                 </div>
               </div>
             </div>
