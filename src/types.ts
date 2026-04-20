@@ -54,6 +54,20 @@ export interface LlmAgent {
   reasoning: string | null;
   permission_mode: string | null;
   system_prompt: string | null;
+  instructions: string | null;
+  claude_config: {
+    effort: string | null;
+    permission_mode: string | null;
+  } | null;
+  codex_config: {
+    reasoning_effort: string | null;
+    approval_policy: string | null;
+    sandbox_mode: string | null;
+    web_search: string | null;
+    profile: string | null;
+    cwd: string | null;
+    additional_directories: string[] | null;
+  } | null;
   created_at: string | null;
   updated_at: string | null;
 }

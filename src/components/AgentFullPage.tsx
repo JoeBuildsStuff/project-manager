@@ -13,8 +13,6 @@ import {
 } from "@/components/ui/dialog";
 import type { LlmAgent } from "@/types";
 
-// ─── constants ────────────────────────────────────────────────────────────────
-
 const PROVIDER_OPTIONS = [
   { value: "codex", label: "Codex" },
   { value: "cursor", label: "Cursor" },
@@ -22,36 +20,34 @@ const PROVIDER_OPTIONS = [
 ] as const;
 type ProviderKey = (typeof PROVIDER_OPTIONS)[number]["value"];
 
-const MODEL_OPTIONS: Record<ProviderKey, string[]> = {
-  codex: [
-    "GPT-5.4",
-    "GPT-5.2-Codex",
-    "GPT-5.1-Codex-Max",
-    "GPT-5.4-Mini",
-    "GPT-5.3-Codex",
-    "GPT-5.2",
-    "GPT-5.1-Codex-Mini",
-  ],
-  claude: [
-    "default",
-    "sonnet",
-    "opus",
-    "haiku",
-    "sonnet[1m]",
-    "opus[1m]",
-    "opusplan",
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5",
-    "Opus 4.6",
-    "Opus 4.7",
-    "Sonnet 4.6",
-    "Haiku 4.5",
-  ],
+const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderKey, string> = {
+  codex: "gpt-5.4",
+  claude: "default",
+  cursor: "Auto",
+};
+
+const MODEL_SUGGESTIONS: Record<ProviderKey, string[]> = {
+  codex: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.2-codex", "gpt-5.1-codex-max"],
+  claude: ["default", "sonnet", "opus", "haiku", "opusplan", "claude-opus-4-6"],
   cursor: ["Auto", "Premium", "Composer 2"],
 };
 
-const REASONING_OPTIONS = [
+const CLAUDE_EFFORT_OPTIONS = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "max", label: "Max" },
+] as const;
+
+const CODEX_REASONING_OPTIONS = [
+  { value: "none", label: "None" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra High" },
+] as const;
+
+const CURSOR_REASONING_OPTIONS = [
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
@@ -75,16 +71,45 @@ const CLAUDE_COMING_SOON = [
   { title: "Terminal/UI Preferences", description: "Set editor mode, status line behavior, and terminal-specific defaults." },
 ] as const;
 
-// ─── draft type ───────────────────────────────────────────────────────────────
+const CODEX_APPROVAL_OPTIONS = [
+  { value: "untrusted", label: "Auto", description: "Works in the project by default, but asks before risky commands or actions outside the workspace." },
+  { value: "on-request", label: "On Request", description: "Defers command approval until Codex explicitly asks for it." },
+  { value: "never", label: "Full Access", description: "Never asks for approval before commands; use only in trusted environments." },
+] as const;
+
+const CODEX_SANDBOX_OPTIONS = [
+  { value: "read-only", label: "Read-only", description: "Can inspect files but cannot edit or run mutating commands." },
+  { value: "workspace-write", label: "Workspace Write", description: "Can edit and run commands inside the workspace." },
+  { value: "danger-full-access", label: "Danger Full Access", description: "No sandbox limits. Codex can act across your machine." },
+] as const;
+
+const CODEX_SEARCH_OPTIONS = [
+  { value: "cached", label: "Cached", description: "Uses the default cached web context." },
+  { value: "live", label: "Live", description: "Enables live web search at startup." },
+] as const;
 
 type AgentDraft = {
   id: number | null;
   name: string;
   provider: ProviderKey;
   model: string;
-  reasoning: (typeof REASONING_OPTIONS)[number]["value"];
-  permissionMode: (typeof CLAUDE_PERMISSION_OPTIONS)[number]["value"];
-  systemPrompt: string;
+  instructions: string;
+  claude: {
+    effort: (typeof CLAUDE_EFFORT_OPTIONS)[number]["value"];
+    permissionMode: (typeof CLAUDE_PERMISSION_OPTIONS)[number]["value"];
+  };
+  codex: {
+    reasoningEffort: (typeof CODEX_REASONING_OPTIONS)[number]["value"];
+    approvalPolicy: (typeof CODEX_APPROVAL_OPTIONS)[number]["value"];
+    sandboxMode: (typeof CODEX_SANDBOX_OPTIONS)[number]["value"];
+    webSearch: (typeof CODEX_SEARCH_OPTIONS)[number]["value"];
+    profile: string;
+    cwd: string;
+    additionalDirectories: string;
+  };
+  cursor: {
+    reasoning: (typeof CURSOR_REASONING_OPTIONS)[number]["value"];
+  };
 };
 
 function createEmptyDraft(): AgentDraft {
@@ -92,31 +117,68 @@ function createEmptyDraft(): AgentDraft {
     id: null,
     name: "",
     provider: "codex",
-    model: MODEL_OPTIONS.codex[0],
-    reasoning: "medium",
-    permissionMode: "default",
-    systemPrompt: "",
+    model: DEFAULT_MODEL_BY_PROVIDER.codex,
+    instructions: "",
+    claude: {
+      effort: "medium",
+      permissionMode: "default",
+    },
+    codex: {
+      reasoningEffort: "medium",
+      approvalPolicy: "untrusted",
+      sandboxMode: "workspace-write",
+      webSearch: "cached",
+      profile: "",
+      cwd: "",
+      additionalDirectories: "",
+    },
+    cursor: {
+      reasoning: "medium",
+    },
   };
 }
 
 function toDraft(agent: LlmAgent): AgentDraft {
-  const provider = PROVIDER_OPTIONS.some((o) => o.value === agent.provider)
+  const provider = PROVIDER_OPTIONS.some((option) => option.value === agent.provider)
     ? (agent.provider as ProviderKey)
     : "codex";
-  const allowedModels = MODEL_OPTIONS[provider] ?? MODEL_OPTIONS.codex;
   return {
     id: agent.id,
     name: agent.name,
     provider,
-    model: agent.model && allowedModels.includes(agent.model) ? agent.model : (allowedModels[0] ?? ""),
-    reasoning: REASONING_OPTIONS.find((o) => o.value === agent.reasoning)?.value ?? "medium",
-    permissionMode:
-      CLAUDE_PERMISSION_OPTIONS.find((o) => o.value === agent.permission_mode)?.value ?? "default",
-    systemPrompt: agent.system_prompt ?? "",
+    model: agent.model?.trim() || DEFAULT_MODEL_BY_PROVIDER[provider],
+    instructions: agent.instructions ?? agent.system_prompt ?? "",
+    claude: {
+      effort:
+        CLAUDE_EFFORT_OPTIONS.find((option) => option.value === (agent.claude_config?.effort ?? agent.reasoning))
+          ?.value ?? "medium",
+      permissionMode:
+        CLAUDE_PERMISSION_OPTIONS.find((option) => option.value === (agent.claude_config?.permission_mode ?? agent.permission_mode))
+          ?.value ?? "default",
+    },
+    codex: {
+      reasoningEffort:
+        CODEX_REASONING_OPTIONS.find((option) => option.value === (agent.codex_config?.reasoning_effort ?? agent.reasoning))
+          ?.value ?? "medium",
+      approvalPolicy:
+        CODEX_APPROVAL_OPTIONS.find((option) => option.value === agent.codex_config?.approval_policy)?.value
+          ?? "untrusted",
+      sandboxMode:
+        CODEX_SANDBOX_OPTIONS.find((option) => option.value === agent.codex_config?.sandbox_mode)?.value
+          ?? "workspace-write",
+      webSearch:
+        CODEX_SEARCH_OPTIONS.find((option) => option.value === agent.codex_config?.web_search)?.value
+          ?? "cached",
+      profile: agent.codex_config?.profile ?? "",
+      cwd: agent.codex_config?.cwd ?? "",
+      additionalDirectories: agent.codex_config?.additional_directories?.join("\n") ?? "",
+    },
+    cursor: {
+      reasoning:
+        CURSOR_REASONING_OPTIONS.find((option) => option.value === agent.reasoning)?.value ?? "medium",
+    },
   };
 }
-
-// ─── sub-components ───────────────────────────────────────────────────────────
 
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
@@ -148,7 +210,13 @@ function AgentDetailRow({
   );
 }
 
-// ─── main component ───────────────────────────────────────────────────────────
+function DisabledField({ label }: { label: string }) {
+  return (
+    <div className="flex h-8 items-center rounded-md border border-border/60 bg-muted/20 px-3 text-xs text-muted-foreground">
+      {label}
+    </div>
+  );
+}
 
 interface Props {
   agent: LlmAgent | null;
@@ -158,9 +226,9 @@ interface Props {
 }
 
 export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Props) {
-  const [draft, setDraft] = useState<AgentDraft>(() =>
-    agent ? toDraft(agent) : createEmptyDraft(),
-  );
+  const [draft, setDraft] = useState<AgentDraft>(() => (
+    agent ? toDraft(agent) : createEmptyDraft()
+  ));
   const [saving, setSaving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -191,10 +259,51 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
     async (overrides?: Partial<AgentDraft>) => {
       const next = { ...draftRef.current, ...overrides };
       if (!next.name.trim()) return;
+      if (!next.model.trim()) return;
       if (next.id == null && createInFlightRef.current) {
         pendingPersistRef.current = true;
         return;
       }
+
+      const additionalDirectories = next.codex.additionalDirectories
+        .split("\n")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const reasoning =
+        next.provider === "claude"
+          ? next.claude.effort
+          : next.provider === "codex"
+            ? next.codex.reasoningEffort
+            : next.cursor.reasoning;
+      const permissionMode = next.provider === "claude" ? next.claude.permissionMode : null;
+      const payload = {
+        name: next.name.trim(),
+        provider: next.provider,
+        model: next.model.trim(),
+        instructions: next.instructions.trim() || null,
+        reasoning,
+        permissionMode,
+        systemPrompt: next.provider === "claude" ? (next.instructions.trim() || null) : null,
+        claudeConfig:
+          next.provider === "claude"
+            ? {
+              effort: next.claude.effort,
+              permission_mode: next.claude.permissionMode,
+            }
+            : null,
+        codexConfig:
+          next.provider === "codex"
+            ? {
+              reasoning_effort: next.codex.reasoningEffort,
+              approval_policy: next.codex.approvalPolicy,
+              sandbox_mode: next.codex.sandboxMode,
+              web_search: next.codex.webSearch,
+              profile: next.codex.profile.trim() || null,
+              cwd: next.codex.cwd.trim() || null,
+              additional_directories: additionalDirectories.length > 0 ? additionalDirectories : null,
+            }
+            : null,
+      };
 
       const requestId = ++saveSequenceRef.current;
       activeSaveCountRef.current += 1;
@@ -202,15 +311,6 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
       setError("");
 
       try {
-        const isClaudeProvider = next.provider === "claude";
-        const payload = {
-          name: next.name.trim(),
-          provider: next.provider,
-          model: next.model,
-          reasoning: next.reasoning,
-          permissionMode: isClaudeProvider ? next.permissionMode : null,
-          systemPrompt: isClaudeProvider ? next.systemPrompt : null,
-        };
         if (next.id == null) {
           createInFlightRef.current = true;
         }
@@ -258,9 +358,7 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
     }
 
     clearTextSaveDebounce();
-    if (!draft.name.trim()) {
-      return;
-    }
+    if (!draft.name.trim()) return;
 
     textSaveTimerRef.current = setTimeout(() => {
       textSaveTimerRef.current = null;
@@ -268,7 +366,16 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
     }, TEXT_SAVE_DEBOUNCE_MS);
 
     return clearTextSaveDebounce;
-  }, [draft.name, draft.systemPrompt, clearTextSaveDebounce, persistDraft]);
+  }, [
+    draft.name,
+    draft.model,
+    draft.instructions,
+    draft.codex.profile,
+    draft.codex.cwd,
+    draft.codex.additionalDirectories,
+    clearTextSaveDebounce,
+    persistDraft,
+  ]);
 
   useEffect(
     () => () => {
@@ -290,6 +397,269 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
     } finally {
       setDeleting(false);
     }
+  };
+
+  const updateAndPersist = (nextDraft: AgentDraft, overrides?: Partial<AgentDraft>) => {
+    clearTextSaveDebounce();
+    setDraft(nextDraft);
+    void persistDraft(overrides ?? nextDraft);
+  };
+
+  const renderReasoningSection = () => {
+    if (draft.provider === "claude") {
+      return (
+        <AgentDetailRow
+          label="Effort"
+          description="Claude supports low, medium, high, and max effort."
+        >
+          <Select
+            value={draft.claude.effort}
+            onValueChange={(value) => {
+              const nextValue = value as AgentDraft["claude"]["effort"];
+              const nextDraft = { ...draft, claude: { ...draft.claude, effort: nextValue } };
+              updateAndPersist(nextDraft, { claude: nextDraft.claude });
+            }}
+          >
+            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {CLAUDE_EFFORT_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </AgentDetailRow>
+      );
+    }
+
+    if (draft.provider === "codex") {
+      return (
+        <AgentDetailRow
+          label="Effort"
+          description="Codex uses OpenAI reasoning effort levels."
+        >
+          <Select
+            value={draft.codex.reasoningEffort}
+            onValueChange={(value) => {
+              const nextValue = value as AgentDraft["codex"]["reasoningEffort"];
+              const nextDraft = { ...draft, codex: { ...draft.codex, reasoningEffort: nextValue } };
+              updateAndPersist(nextDraft, { codex: nextDraft.codex });
+            }}
+          >
+            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {CODEX_REASONING_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </AgentDetailRow>
+      );
+    }
+
+    return (
+      <AgentDetailRow
+        label="Reasoning"
+        description="Cursor keeps the shared reasoning selector."
+      >
+        <Select
+          value={draft.cursor.reasoning}
+          onValueChange={(value) => {
+            const nextValue = value as AgentDraft["cursor"]["reasoning"];
+            const nextDraft = { ...draft, cursor: { reasoning: nextValue } };
+            updateAndPersist(nextDraft, { cursor: nextDraft.cursor });
+          }}
+        >
+          <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {CURSOR_REASONING_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </AgentDetailRow>
+    );
+  };
+
+  const renderAccessSection = () => {
+    if (draft.provider === "claude") {
+      return (
+        <AgentDetailRow
+          label="Permissions"
+          description={CLAUDE_PERMISSION_OPTIONS.find((option) => option.value === draft.claude.permissionMode)?.description}
+        >
+          <Select
+            value={draft.claude.permissionMode}
+            onValueChange={(value) => {
+              const nextValue = value as AgentDraft["claude"]["permissionMode"];
+              const nextDraft = { ...draft, claude: { ...draft.claude, permissionMode: nextValue } };
+              updateAndPersist(nextDraft, { claude: nextDraft.claude });
+            }}
+          >
+            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {CLAUDE_PERMISSION_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </AgentDetailRow>
+      );
+    }
+
+    if (draft.provider === "codex") {
+      return (
+        <>
+          <AgentDetailRow
+            label="Approvals"
+            description={CODEX_APPROVAL_OPTIONS.find((option) => option.value === draft.codex.approvalPolicy)?.description}
+          >
+            <Select
+              value={draft.codex.approvalPolicy}
+              onValueChange={(value) => {
+                const nextValue = value as AgentDraft["codex"]["approvalPolicy"];
+                const nextDraft = { ...draft, codex: { ...draft.codex, approvalPolicy: nextValue } };
+                updateAndPersist(nextDraft, { codex: nextDraft.codex });
+              }}
+            >
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {CODEX_APPROVAL_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </AgentDetailRow>
+          <AgentDetailRow
+            label="Sandbox"
+            description={CODEX_SANDBOX_OPTIONS.find((option) => option.value === draft.codex.sandboxMode)?.description}
+          >
+            <Select
+              value={draft.codex.sandboxMode}
+              onValueChange={(value) => {
+                const nextValue = value as AgentDraft["codex"]["sandboxMode"];
+                const nextDraft = { ...draft, codex: { ...draft.codex, sandboxMode: nextValue } };
+                updateAndPersist(nextDraft, { codex: nextDraft.codex });
+              }}
+            >
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {CODEX_SANDBOX_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </AgentDetailRow>
+        </>
+      );
+    }
+
+    return (
+      <AgentDetailRow
+        label="Permissions"
+        description="Cursor-specific access controls are not configured yet."
+        disabled
+      >
+        <DisabledField label="No provider-specific permissions" />
+      </AgentDetailRow>
+    );
+  };
+
+  const renderAdvancedSection = () => {
+    if (draft.provider === "codex") {
+      return (
+        <>
+          <AgentDetailRow
+            label="Search"
+            description={CODEX_SEARCH_OPTIONS.find((option) => option.value === draft.codex.webSearch)?.description}
+          >
+            <Select
+              value={draft.codex.webSearch}
+              onValueChange={(value) => {
+                const nextValue = value as AgentDraft["codex"]["webSearch"];
+                const nextDraft = { ...draft, codex: { ...draft.codex, webSearch: nextValue } };
+                updateAndPersist(nextDraft, { codex: nextDraft.codex });
+              }}
+            >
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {CODEX_SEARCH_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </AgentDetailRow>
+          <AgentDetailRow
+            label="Profile"
+            description="Maps to `--profile` when launching Codex."
+          >
+            <Input
+              value={draft.codex.profile}
+              onChange={(event) => setDraft({
+                ...draft,
+                codex: { ...draft.codex, profile: event.target.value },
+              })}
+              placeholder="default"
+              className="h-8 text-xs"
+            />
+          </AgentDetailRow>
+          <AgentDetailRow
+            label="Working Dir"
+            description="Maps to `--cd` for the startup working directory."
+          >
+            <Input
+              value={draft.codex.cwd}
+              onChange={(event) => setDraft({
+                ...draft,
+                codex: { ...draft.codex, cwd: event.target.value },
+              })}
+              placeholder="/path/to/project"
+              className="h-8 text-xs"
+            />
+          </AgentDetailRow>
+          <AgentDetailRow
+            label="Extra Dirs"
+            description="One path per line. Maps to repeatable `--add-dir` flags."
+          >
+            <Textarea
+              value={draft.codex.additionalDirectories}
+              onChange={(event) => setDraft({
+                ...draft,
+                codex: { ...draft.codex, additionalDirectories: event.target.value },
+              })}
+              placeholder={"/path/to/backend\n/path/to/shared"}
+              className="min-h-24 resize-none text-xs"
+            />
+          </AgentDetailRow>
+        </>
+      );
+    }
+
+    if (draft.provider === "claude") {
+      return (
+        <>
+          {CLAUDE_COMING_SOON.map((item) => (
+            <AgentDetailRow
+              key={item.title}
+              label={item.title}
+              description={item.description}
+              disabled
+            >
+              <DisabledField label="Coming soon" />
+            </AgentDetailRow>
+          ))}
+        </>
+      );
+    }
+
+    return (
+      <AgentDetailRow
+        label="Advanced"
+        description="Cursor-specific advanced options are not configured yet."
+        disabled
+      >
+        <DisabledField label="No advanced Cursor fields" />
+      </AgentDetailRow>
+    );
   };
 
   return (
@@ -322,146 +692,108 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
 
       <div className="mx-2 mb-2 mt-1 min-h-0 flex-1 overflow-y-auto rounded-lg border bg-background">
         <div className="space-y-5 p-4">
-              {saving ? (
-                <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Saving...
-                </p>
-              ) : null}
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">Name</label>
-                <Input
-                  value={draft.name}
-                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                  placeholder="Agent name"
-                  className="mt-1 h-8 text-xs"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">System Prompt</label>
+          {saving ? (
+            <p className="flex items-center gap-1 text-xs text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Saving...
+            </p>
+          ) : null}
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground">Name</label>
+            <Input
+              value={draft.name}
+              onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+              placeholder="Agent name"
+              className="mt-1 h-8 text-xs"
+            />
+          </div>
+
+          <div>
+            <SectionLabel>Basics</SectionLabel>
+            <div className="space-y-3">
+              <AgentDetailRow label="Provider">
+                <Select
+                  value={draft.provider}
+                  onValueChange={(value) => {
+                    if (!value || !PROVIDER_OPTIONS.some((option) => option.value === value)) return;
+                    const provider = value as ProviderKey;
+                    const nextDraft = {
+                      ...draft,
+                      provider,
+                      model: DEFAULT_MODEL_BY_PROVIDER[provider],
+                    };
+                    updateAndPersist(nextDraft, nextDraft);
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {PROVIDER_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </AgentDetailRow>
+
+              <AgentDetailRow
+                label="Model"
+                description={`Common choices: ${MODEL_SUGGESTIONS[draft.provider].join(", ")}`}
+              >
+                <Select
+                  value={draft.model}
+                  onValueChange={(value) => {
+                    if (!value) return;
+                    const nextDraft = { ...draft, model: value };
+                    updateAndPersist(nextDraft, { model: value });
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {MODEL_SUGGESTIONS[draft.provider].map((value) => (
+                      <SelectItem key={value} value={value}>{value}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </AgentDetailRow>
+
+              <AgentDetailRow
+                label="Instructions"
+                description={
+                  draft.provider === "claude"
+                    ? "Shared UI field; stored as Claude system prompt semantics."
+                    : "Shared startup instructions for this provider."
+                }
+              >
                 <Textarea
-                  value={draft.systemPrompt}
-                  onChange={(e) => setDraft({ ...draft, systemPrompt: e.target.value })}
-                  placeholder="Set the Claude system prompt for this agent."
-                  className="mt-1 min-h-32 resize-none text-xs"
-                  disabled={draft.provider !== "claude"}
+                  value={draft.instructions}
+                  onChange={(event) => setDraft({ ...draft, instructions: event.target.value })}
+                  placeholder="Tell the agent how it should behave by default."
+                  className="min-h-32 resize-none text-xs"
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  Stored as a Claude `--system-prompt` value. Disabled for non-Claude providers.
-                </p>
-              </div>
-              <div>
-                <SectionLabel>Details</SectionLabel>
-                <div className="space-y-3">
-                  <AgentDetailRow label="Provider">
-                    <Select
-                      value={draft.provider}
-                      onValueChange={(value) => {
-                        if (!value || !(value in MODEL_OPTIONS)) return;
-                        const provider = value as ProviderKey;
-                        clearTextSaveDebounce();
-                        const nextDraft: AgentDraft = {
-                          ...draft,
-                          provider,
-                          model: MODEL_OPTIONS[provider][0] ?? "",
-                          permissionMode: provider === "claude" ? draft.permissionMode : "default",
-                          systemPrompt: provider === "claude" ? draft.systemPrompt : "",
-                        };
-                        setDraft(nextDraft);
-                        void persistDraft(nextDraft);
-                      }}
-                    >
-                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {PROVIDER_OPTIONS.map((o) => (
-                          <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </AgentDetailRow>
-                  <AgentDetailRow
-                    label="Model"
-                    description={draft.provider === "claude" ? "Claude aliases resolve to the latest supported model version." : undefined}
-                  >
-                    <Select
-                      value={draft.model}
-                      onValueChange={(value) => {
-                        if (!value) return;
-                        clearTextSaveDebounce();
-                        setDraft({ ...draft, model: value });
-                        void persistDraft({ model: value });
-                      }}
-                    >
-                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {MODEL_OPTIONS[draft.provider].map((m) => (
-                          <SelectItem key={m} value={m}>{m}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </AgentDetailRow>
-                  <AgentDetailRow label="Reasoning Level">
-                    <Select
-                      value={draft.reasoning}
-                      onValueChange={(value) => {
-                        if (!value) return;
-                        const nextReasoning = value as AgentDraft["reasoning"];
-                        clearTextSaveDebounce();
-                        setDraft({ ...draft, reasoning: nextReasoning });
-                        void persistDraft({ reasoning: nextReasoning });
-                      }}
-                    >
-                      <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {REASONING_OPTIONS.map((o) => (
-                          <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </AgentDetailRow>
-                  <AgentDetailRow
-                    label="Permissions"
-                    description={
-                      draft.provider === "claude"
-                        ? CLAUDE_PERMISSION_OPTIONS.find((o) => o.value === draft.permissionMode)?.description
-                        : "Claude permission modes are only available when the provider is Claude."
-                    }
-                  >
-                    <Select
-                      value={draft.permissionMode}
-                      onValueChange={(value) => {
-                        if (!value) return;
-                        const nextPermissionMode = value as AgentDraft["permissionMode"];
-                        clearTextSaveDebounce();
-                        setDraft({ ...draft, permissionMode: nextPermissionMode });
-                        void persistDraft({ permissionMode: nextPermissionMode });
-                      }}
-                      disabled={draft.provider !== "claude"}
-                    >
-                      <SelectTrigger className="h-8 text-xs">
-                        <SelectValue placeholder="Claude permission mode" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {CLAUDE_PERMISSION_OPTIONS.map((o) => (
-                          <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </AgentDetailRow>
-                  {CLAUDE_COMING_SOON.map((item) => (
-                    <AgentDetailRow
-                      key={item.title}
-                      label={item.title}
-                      description={item.description}
-                      disabled
-                    >
-                      <div className="flex h-8 items-center rounded-md border border-border/60 bg-muted/20 px-3 text-xs text-muted-foreground">
-                        Coming soon
-                      </div>
-                    </AgentDetailRow>
-                  ))}
-                </div>
-              </div>
+              </AgentDetailRow>
+            </div>
+          </div>
+
+          <div>
+            <SectionLabel>Reasoning / Effort</SectionLabel>
+            <div className="space-y-3">
+              {renderReasoningSection()}
+            </div>
+          </div>
+
+          <div>
+            <SectionLabel>Access / Permissions</SectionLabel>
+            <div className="space-y-3">
+              {renderAccessSection()}
+            </div>
+          </div>
+
+          <div>
+            <SectionLabel>Advanced</SectionLabel>
+            <div className="space-y-3">
+              {renderAdvancedSection()}
+            </div>
+          </div>
 
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
         </div>

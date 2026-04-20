@@ -46,10 +46,13 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 const REASONING_LABELS: Record<string, string> = {
+  none: "None",
   low: "Low",
   medium: "Medium",
   high: "High",
   extra_high: "Extra High",
+  xhigh: "Extra High",
+  max: "Max",
 };
 
 const PERMISSION_LABELS: Record<string, string> = {
@@ -132,8 +135,10 @@ function buildColumns(): ColumnDef<LlmAgent>[] {
           <Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <div className="min-w-0">
             <div className="truncate text-xs font-medium">{row.original.name}</div>
-            {row.original.system_prompt ? (
-              <div className="truncate text-[11px] text-muted-foreground">{row.original.system_prompt}</div>
+            {(row.original.instructions ?? row.original.system_prompt) ? (
+              <div className="truncate text-[11px] text-muted-foreground">
+                {row.original.instructions ?? row.original.system_prompt}
+              </div>
             ) : null}
           </div>
         </div>
@@ -280,7 +285,7 @@ export default function AgentTable({ onOpenAgent }: Props) {
     const q = search.trim().toLowerCase();
     if (!q) return agents;
     return agents.filter((a) =>
-      [a.name, a.provider, a.model, a.reasoning, a.permission_mode, a.system_prompt]
+      [a.name, a.provider, a.model, a.reasoning, a.permission_mode, a.instructions, a.system_prompt]
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(q)),
     );

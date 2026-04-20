@@ -160,6 +160,9 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
             reasoning  TEXT,
             permission_mode TEXT,
             system_prompt TEXT,
+            instructions TEXT,
+            claude_config TEXT,
+            codex_config TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );",
@@ -168,6 +171,9 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN reasoning TEXT", []);
     let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN permission_mode TEXT", []);
     let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN system_prompt TEXT", []);
+    let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN instructions TEXT", []);
+    let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN claude_config TEXT", []);
+    let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN codex_config TEXT", []);
 
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN assignee_kind TEXT", []);
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN assignee_id INTEGER", []);
@@ -2815,6 +2821,23 @@ pub struct Task {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClaudeAgentConfig {
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CodexAgentConfig {
+    pub reasoning_effort: Option<String>,
+    pub approval_policy: Option<String>,
+    pub sandbox_mode: Option<String>,
+    pub web_search: Option<String>,
+    pub profile: Option<String>,
+    pub cwd: Option<String>,
+    pub additional_directories: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LlmAgent {
     pub id: i64,
     pub name: String,
@@ -2823,6 +2846,9 @@ pub struct LlmAgent {
     pub reasoning: Option<String>,
     pub permission_mode: Option<String>,
     pub system_prompt: Option<String>,
+    pub instructions: Option<String>,
+    pub claude_config: Option<ClaudeAgentConfig>,
+    pub codex_config: Option<CodexAgentConfig>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -2889,81 +2915,197 @@ fn map_task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
 }
 
 fn map_llm_agent_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmAgent> {
+    let provider: Option<String> = row.get(2)?;
+    let reasoning: Option<String> = row.get(4)?;
+    let permission_mode: Option<String> = row.get(5)?;
+    let system_prompt: Option<String> = row.get(6)?;
+    let instructions: Option<String> = row.get(7)?;
+    let claude_config_json: Option<String> = row.get(8)?;
+    let codex_config_json: Option<String> = row.get(9)?;
+    let created_at: Option<String> = row.get(10)?;
+    let updated_at: Option<String> = row.get(11)?;
+
+    let instructions = instructions.or_else(|| {
+        if provider.as_deref() == Some("claude") {
+            system_prompt.clone()
+        } else {
+            None
+        }
+    });
+
+    let mut claude_config = claude_config_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<ClaudeAgentConfig>(json).ok());
+    if provider.as_deref() == Some("claude") {
+        let fallback_effort = reasoning.clone();
+        let fallback_permission_mode = permission_mode.clone();
+        match claude_config.as_mut() {
+            Some(config) => {
+                if config.effort.is_none() {
+                    config.effort = fallback_effort;
+                }
+                if config.permission_mode.is_none() {
+                    config.permission_mode = fallback_permission_mode;
+                }
+            }
+            None if fallback_effort.is_some() || fallback_permission_mode.is_some() => {
+                claude_config = Some(ClaudeAgentConfig {
+                    effort: fallback_effort,
+                    permission_mode: fallback_permission_mode,
+                });
+            }
+            None => {}
+        }
+    }
+
+    let mut codex_config = codex_config_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<CodexAgentConfig>(json).ok());
+    if provider.as_deref() == Some("codex") {
+        if let Some(config) = codex_config.as_mut() {
+            if config.reasoning_effort.is_none() {
+                config.reasoning_effort = reasoning.clone();
+            }
+        } else if reasoning.is_some() {
+            codex_config = Some(CodexAgentConfig {
+                reasoning_effort: reasoning.clone(),
+                approval_policy: None,
+                sandbox_mode: None,
+                web_search: None,
+                profile: None,
+                cwd: None,
+                additional_directories: None,
+            });
+        }
+    }
+
     Ok(LlmAgent {
         id: row.get(0)?,
         name: row.get(1)?,
-        provider: row.get(2)?,
+        provider,
         model: row.get(3)?,
-        reasoning: row.get(4)?,
-        permission_mode: row.get(5)?,
-        system_prompt: row.get(6)?,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
+        reasoning,
+        permission_mode,
+        system_prompt,
+        instructions,
+        claude_config,
+        codex_config,
+        created_at,
+        updated_at,
     })
 }
 
 fn validate_llm_agent_configuration(
     provider: &str,
     model: &str,
-    reasoning: &str,
+    instructions: Option<&str>,
+    reasoning: Option<&str>,
     permission_mode: Option<&str>,
+    claude_config: Option<&ClaudeAgentConfig>,
+    codex_config: Option<&CodexAgentConfig>,
 ) -> Result<(), String> {
-    let valid_model = match provider {
-        "codex" => matches!(
-            model,
-            "GPT-5.4"
-                | "GPT-5.2-Codex"
-                | "GPT-5.1-Codex-Max"
-                | "GPT-5.4-Mini"
-                | "GPT-5.3-Codex"
-                | "GPT-5.2"
-                | "GPT-5.1-Codex-Mini"
-        ),
-        "claude" => matches!(
-            model,
-            "default"
-                | "sonnet"
-                | "opus"
-                | "haiku"
-                | "sonnet[1m]"
-                | "opus[1m]"
-                | "opusplan"
-                | "claude-opus-4-6"
-                | "claude-sonnet-4-6"
-                | "claude-haiku-4-5"
-                | "Opus 4.6"
-                | "Opus 4.7"
-                | "Sonnet 4.6"
-                | "Haiku 4.5"
-        ),
-        "cursor" => matches!(model, "Auto" | "Premium" | "Composer 2"),
-        _ => false,
-    };
-
-    if !valid_model {
-        return Err("Invalid provider/model combination".into());
+    if !matches!(provider, "codex" | "claude" | "cursor") {
+        return Err("Invalid provider".into());
+    }
+    if model.trim().is_empty() {
+        return Err("Model is required".into());
+    }
+    if let Some(value) = instructions {
+        if value.trim().is_empty() {
+            return Err("Instructions cannot be blank when provided".into());
+        }
     }
 
-    if !matches!(reasoning, "low" | "medium" | "high" | "extra_high") {
-        return Err("Invalid reasoning option".into());
-    }
-
-    if let Some(permission_mode) = permission_mode {
-        if provider != "claude" {
-            return Err("Permission mode is only supported for Claude agents".into());
+    match provider {
+        "claude" => {
+            if codex_config.is_some() {
+                return Err("Codex config is not supported for Claude agents".into());
+            }
+            if let Some(value) = reasoning {
+                if !matches!(value, "low" | "medium" | "high" | "max") {
+                    return Err("Invalid Claude effort option".into());
+                }
+            }
+            if let Some(config) = claude_config {
+                if let Some(effort) = config.effort.as_deref() {
+                    if !matches!(effort, "low" | "medium" | "high" | "max") {
+                        return Err("Invalid Claude effort option".into());
+                    }
+                }
+                if let Some(mode) = config.permission_mode.as_deref() {
+                    if !matches!(
+                        mode,
+                        "default"
+                            | "acceptEdits"
+                            | "plan"
+                            | "auto"
+                            | "dontAsk"
+                            | "bypassPermissions"
+                    ) {
+                        return Err("Invalid Claude permission mode".into());
+                    }
+                }
+            }
+            if let Some(mode) = permission_mode {
+                if !matches!(
+                    mode,
+                    "default"
+                        | "acceptEdits"
+                        | "plan"
+                        | "auto"
+                        | "dontAsk"
+                        | "bypassPermissions"
+                ) {
+                    return Err("Invalid Claude permission mode".into());
+                }
+            }
         }
-
-        if !matches!(
-            permission_mode,
-            "default"
-                | "acceptEdits"
-                | "plan"
-                | "auto"
-                | "dontAsk"
-                | "bypassPermissions"
-        ) {
-            return Err("Invalid Claude permission mode".into());
+        "codex" => {
+            if claude_config.is_some() || permission_mode.is_some() {
+                return Err("Claude permissions are not supported for Codex agents".into());
+            }
+            if let Some(value) = reasoning {
+                if !matches!(value, "none" | "low" | "medium" | "high" | "xhigh") {
+                    return Err("Invalid Codex reasoning option".into());
+                }
+            }
+            if let Some(config) = codex_config {
+                if let Some(reasoning_effort) = config.reasoning_effort.as_deref() {
+                    if !matches!(reasoning_effort, "none" | "low" | "medium" | "high" | "xhigh") {
+                        return Err("Invalid Codex reasoning option".into());
+                    }
+                }
+                if let Some(approval_policy) = config.approval_policy.as_deref() {
+                    if !matches!(approval_policy, "untrusted" | "on-request" | "never") {
+                        return Err("Invalid Codex approval policy".into());
+                    }
+                }
+                if let Some(sandbox_mode) = config.sandbox_mode.as_deref() {
+                    if !matches!(
+                        sandbox_mode,
+                        "read-only" | "workspace-write" | "danger-full-access"
+                    ) {
+                        return Err("Invalid Codex sandbox mode".into());
+                    }
+                }
+                if let Some(web_search) = config.web_search.as_deref() {
+                    if !matches!(web_search, "cached" | "live") {
+                        return Err("Invalid Codex search mode".into());
+                    }
+                }
+            }
         }
+        "cursor" => {
+            if claude_config.is_some() || codex_config.is_some() || permission_mode.is_some() {
+                return Err("Provider-specific config is not supported for Cursor agents".into());
+            }
+            if let Some(value) = reasoning {
+                if !matches!(value, "low" | "medium" | "high" | "extra_high") {
+                    return Err("Invalid Cursor reasoning option".into());
+                }
+            }
+        }
+        _ => unreachable!(),
     }
 
     Ok(())
@@ -3184,7 +3326,8 @@ pub fn get_llm_agents(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<Llm
     let conn = open_db(&state)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt, created_at, updated_at
+            "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt,
+                    instructions, claude_config, codex_config, created_at, updated_at
              FROM llm_agents
              ORDER BY lower(name), id",
         )
@@ -3206,9 +3349,12 @@ pub fn create_llm_agent(
     name: String,
     provider: Option<String>,
     model: Option<String>,
+    instructions: Option<String>,
     reasoning: Option<String>,
     permission_mode: Option<String>,
     system_prompt: Option<String>,
+    claude_config: Option<ClaudeAgentConfig>,
+    codex_config: Option<CodexAgentConfig>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<LlmAgent, String> {
     let conn = open_db(&state)?;
@@ -3225,36 +3371,155 @@ pub fn create_llm_agent(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Model is required".to_string())?;
+    let instructions = instructions
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let reasoning = reasoning
         .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "medium".into());
+        .or_else(|| {
+            if provider == "codex" {
+                Some("medium".into())
+            } else if provider == "claude" || provider == "cursor" {
+                Some("medium".into())
+            } else {
+                None
+            }
+        });
     let permission_mode = permission_mode
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let system_prompt = system_prompt
+    let legacy_system_prompt = system_prompt
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let claude_config = claude_config.map(|mut config| {
+        config.effort = config
+            .effort
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.permission_mode = config
+            .permission_mode
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        config
+    });
+    let codex_config = codex_config.map(|mut config| {
+        config.reasoning_effort = config
+            .reasoning_effort
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.approval_policy = config
+            .approval_policy
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.sandbox_mode = config
+            .sandbox_mode
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.web_search = config
+            .web_search
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.profile = config
+            .profile
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        config.cwd = config
+            .cwd
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        config.additional_directories = config.additional_directories.map(|values| {
+            values
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        }).filter(|values| !values.is_empty());
+        config
+    });
 
-    validate_llm_agent_configuration(&provider, &model, &reasoning, permission_mode.as_deref())?;
+    validate_llm_agent_configuration(
+        &provider,
+        &model,
+        instructions.as_deref().or(legacy_system_prompt.as_deref()),
+        reasoning.as_deref(),
+        permission_mode.as_deref(),
+        claude_config.as_ref(),
+        codex_config.as_ref(),
+    )?;
+
+    let stored_reasoning = match provider.as_str() {
+        "claude" => claude_config
+            .as_ref()
+            .and_then(|config| config.effort.clone())
+            .or(reasoning.clone()),
+        "codex" => codex_config
+            .as_ref()
+            .and_then(|config| config.reasoning_effort.clone())
+            .or(reasoning.clone()),
+        _ => reasoning.clone(),
+    };
+    let stored_permission_mode = match provider.as_str() {
+        "claude" => claude_config
+            .as_ref()
+            .and_then(|config| config.permission_mode.clone())
+            .or(permission_mode.clone()),
+        "codex" => {
+            let approval = codex_config
+                .as_ref()
+                .and_then(|config| config.approval_policy.as_deref());
+            let sandbox = codex_config
+                .as_ref()
+                .and_then(|config| config.sandbox_mode.as_deref());
+            match (approval, sandbox) {
+                (Some(approval), Some(sandbox)) => Some(format!("{approval} · {sandbox}")),
+                (Some(approval), None) => Some(approval.to_string()),
+                (None, Some(sandbox)) => Some(sandbox.to_string()),
+                (None, None) => None,
+            }
+        }
+        _ => None,
+    };
+    let stored_system_prompt = if provider == "claude" {
+        instructions.clone().or(legacy_system_prompt)
+    } else {
+        None
+    };
+    let claude_config_json = claude_config
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let codex_config_json = codex_config
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| e.to_string())?;
 
     conn.execute(
-        "INSERT INTO llm_agents (name, provider, model, reasoning, permission_mode, system_prompt)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO llm_agents (
+            name, provider, model, reasoning, permission_mode, system_prompt,
+            instructions, claude_config, codex_config
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             trimmed_name,
             provider,
             model,
-            reasoning,
-            permission_mode,
-            system_prompt
+            stored_reasoning,
+            stored_permission_mode,
+            stored_system_prompt,
+            instructions,
+            claude_config_json,
+            codex_config_json
         ],
     )
     .map_err(|e| e.to_string())?;
 
     let id = conn.last_insert_rowid();
     conn.query_row(
-        "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt, created_at, updated_at
+        "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt,
+                instructions, claude_config, codex_config, created_at, updated_at
          FROM llm_agents
          WHERE id = ?1",
         [id],
@@ -3269,9 +3534,12 @@ pub fn update_llm_agent(
     name: String,
     provider: Option<String>,
     model: Option<String>,
+    instructions: Option<String>,
     reasoning: Option<String>,
     permission_mode: Option<String>,
     system_prompt: Option<String>,
+    claude_config: Option<ClaudeAgentConfig>,
+    codex_config: Option<CodexAgentConfig>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<LlmAgent, String> {
     let conn = open_db(&state)?;
@@ -3288,18 +3556,130 @@ pub fn update_llm_agent(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Model is required".to_string())?;
+    let instructions = instructions
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let reasoning = reasoning
         .map(|value| value.trim().to_lowercase())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "medium".into());
+        .or_else(|| {
+            if provider == "codex" {
+                Some("medium".into())
+            } else if provider == "claude" || provider == "cursor" {
+                Some("medium".into())
+            } else {
+                None
+            }
+        });
     let permission_mode = permission_mode
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let system_prompt = system_prompt
+    let legacy_system_prompt = system_prompt
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let claude_config = claude_config.map(|mut config| {
+        config.effort = config
+            .effort
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.permission_mode = config
+            .permission_mode
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        config
+    });
+    let codex_config = codex_config.map(|mut config| {
+        config.reasoning_effort = config
+            .reasoning_effort
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.approval_policy = config
+            .approval_policy
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.sandbox_mode = config
+            .sandbox_mode
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.web_search = config
+            .web_search
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.profile = config
+            .profile
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        config.cwd = config
+            .cwd
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        config.additional_directories = config.additional_directories.map(|values| {
+            values
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        }).filter(|values| !values.is_empty());
+        config
+    });
 
-    validate_llm_agent_configuration(&provider, &model, &reasoning, permission_mode.as_deref())?;
+    validate_llm_agent_configuration(
+        &provider,
+        &model,
+        instructions.as_deref().or(legacy_system_prompt.as_deref()),
+        reasoning.as_deref(),
+        permission_mode.as_deref(),
+        claude_config.as_ref(),
+        codex_config.as_ref(),
+    )?;
+
+    let stored_reasoning = match provider.as_str() {
+        "claude" => claude_config
+            .as_ref()
+            .and_then(|config| config.effort.clone())
+            .or(reasoning.clone()),
+        "codex" => codex_config
+            .as_ref()
+            .and_then(|config| config.reasoning_effort.clone())
+            .or(reasoning.clone()),
+        _ => reasoning.clone(),
+    };
+    let stored_permission_mode = match provider.as_str() {
+        "claude" => claude_config
+            .as_ref()
+            .and_then(|config| config.permission_mode.clone())
+            .or(permission_mode.clone()),
+        "codex" => {
+            let approval = codex_config
+                .as_ref()
+                .and_then(|config| config.approval_policy.as_deref());
+            let sandbox = codex_config
+                .as_ref()
+                .and_then(|config| config.sandbox_mode.as_deref());
+            match (approval, sandbox) {
+                (Some(approval), Some(sandbox)) => Some(format!("{approval} · {sandbox}")),
+                (Some(approval), None) => Some(approval.to_string()),
+                (None, Some(sandbox)) => Some(sandbox.to_string()),
+                (None, None) => None,
+            }
+        }
+        _ => None,
+    };
+    let stored_system_prompt = if provider == "claude" {
+        instructions.clone().or(legacy_system_prompt)
+    } else {
+        None
+    };
+    let claude_config_json = claude_config
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let codex_config_json = codex_config
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| e.to_string())?;
 
     conn.execute(
         "UPDATE llm_agents
@@ -3309,22 +3689,29 @@ pub fn update_llm_agent(
              reasoning = ?4,
              permission_mode = ?5,
              system_prompt = ?6,
+             instructions = ?7,
+             claude_config = ?8,
+             codex_config = ?9,
              updated_at = datetime('now')
-         WHERE id = ?7",
+         WHERE id = ?10",
         rusqlite::params![
             trimmed_name,
             provider,
             model,
-            reasoning,
-            permission_mode,
-            system_prompt,
+            stored_reasoning,
+            stored_permission_mode,
+            stored_system_prompt,
+            instructions,
+            claude_config_json,
+            codex_config_json,
             id
         ],
     )
     .map_err(|e| e.to_string())?;
 
     conn.query_row(
-        "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt, created_at, updated_at
+        "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt,
+                instructions, claude_config, codex_config, created_at, updated_at
          FROM llm_agents
          WHERE id = ?1",
         [id],
@@ -3360,7 +3747,8 @@ pub fn get_task_assignment_options(
 
     let mut agents_stmt = conn
         .prepare(
-            "SELECT id, name, provider, model, reasoning, created_at, updated_at
+            "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt,
+                    instructions, claude_config, codex_config, created_at, updated_at
              FROM llm_agents
              ORDER BY lower(name), id",
         )
