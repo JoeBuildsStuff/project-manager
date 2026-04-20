@@ -189,6 +189,7 @@ export default function Settings({ workspacePath, onWorkspaceChanged, onBack }: 
     }
   };
 
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">

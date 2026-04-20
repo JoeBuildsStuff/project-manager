@@ -38,9 +38,28 @@ export interface Task {
   description: string | null;
   status: string;
   priority: string | null;
+  assignee_kind: "llm_agent" | null;
+  assignee_id: number | null;
+  assignee_name: string | null;
   created_at: string | null;
   updated_at: string | null;
   completed_at: string | null;
+}
+
+export interface LlmAgent {
+  id: number;
+  name: string;
+  provider: string | null;
+  model: string | null;
+  reasoning: string | null;
+  permission_mode: string | null;
+  system_prompt: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface TaskAssignmentOptions {
+  llm_agents: LlmAgent[];
 }
 
 export interface TaskCount {

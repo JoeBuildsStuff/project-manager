@@ -14,6 +14,14 @@ const LABELS: Record<string, string> = {
   deploy_platform:  "Deploy",
   commit_count:     "Commits",
   last_commit_date: "Last commit",
+  // agent columns
+  name:             "Name",
+  provider:         "Provider",
+  model:            "Model",
+  reasoning:        "Reasoning",
+  permission_mode:  "Permissions",
+  system_prompt:    "System Prompt",
+  updated_at:       "Updated",
 };
 
 export function DataTableViewOptions<TData>({ table }: { table: Table<TData> }) {

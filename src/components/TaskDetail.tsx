@@ -28,13 +28,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { Task } from "../types";
+import type { Task, TaskAssignmentOptions } from "../types";
 import {
   TaskStatusBadge,
   TaskKindBadge,
   TaskPriorityBadge,
   taskFieldSelectTriggerClass,
 } from "./task-badges";
+import { TaskAssigneeBadge } from "./task-assignee";
 
 interface Props {
   task: Task | null;
@@ -82,10 +83,23 @@ export default function TaskDetail({
   const [status, setStatus] = useState("");
   const [kind, setKind] = useState("");
   const [priority, setPriority] = useState("");
+  const [assigneeKind, setAssigneeKind] = useState<Task["assignee_kind"]>(null);
+  const [assigneeId, setAssigneeId] = useState<number | null>(null);
+  const [assignmentOptions, setAssignmentOptions] = useState<TaskAssignmentOptions>({
+    llm_agents: [],
+  });
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    invoke<TaskAssignmentOptions>("get_task_assignment_options")
+      .then(setAssignmentOptions)
+      .catch(() => {
+        setAssignmentOptions({ llm_agents: [] });
+      });
+  }, []);
 
   useEffect(() => {
     if (!task || !open) return;
@@ -94,11 +108,20 @@ export default function TaskDetail({
     setStatus(task.status);
     setKind(task.kind);
     setPriority(task.priority ?? "medium");
+    setAssigneeKind(task.assignee_kind);
+    setAssigneeId(task.assignee_id);
     setError("");
     setDeleteOpen(false);
   }, [task?.id, open]);
 
   if (!task) return null;
+
+  const assigneeValue =
+    assigneeKind && assigneeId != null ? `${assigneeKind}:${assigneeId}` : "__unassigned__";
+  const currentAssigneeName =
+    assigneeKind === "llm_agent"
+        ? assignmentOptions.llm_agents.find((agent) => agent.id === assigneeId)?.name ?? task.assignee_name
+        : null;
 
   const handleSave = async () => {
     setSaving(true);
@@ -111,6 +134,8 @@ export default function TaskDetail({
         status: status || null,
         kind: kind || null,
         priority: priority || null,
+        assigneeKind,
+        assigneeId,
       });
       onTaskSaved(updated);
     } catch (e) {
@@ -264,6 +289,44 @@ export default function TaskDetail({
                         </SelectItem>
                       </SelectContent>
                     </Select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Assign</label>
+                  <Select
+                    value={assigneeValue}
+                    onValueChange={(value) => {
+                      if (!value) return;
+                      if (value === "__unassigned__") {
+                        setAssigneeKind(null);
+                        setAssigneeId(null);
+                        return;
+                      }
+
+                      const [kindValue, idValue] = value.split(":");
+                      const parsedId = Number(idValue);
+                      if (kindValue !== "llm_agent" || Number.isNaN(parsedId)) {
+                        return;
+                      }
+
+                      setAssigneeKind("llm_agent");
+                      setAssigneeId(parsedId);
+                    }}
+                  >
+                    <SelectTrigger size="sm" className="mt-1 h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__unassigned__">Unassigned</SelectItem>
+                      {assignmentOptions.llm_agents.map((agent) => (
+                        <SelectItem key={`llm_agent:${agent.id}`} value={`llm_agent:${agent.id}`}>
+                          AI · {agent.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <div className="mt-2">
+                    <TaskAssigneeBadge kind={assigneeKind} name={currentAssigneeName} />
                   </div>
                 </div>
               </div>

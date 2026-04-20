@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { toast } from "sonner";
 import { Download } from "lucide-react";
-import type { NotesDocument, NotesDocumentSummary, Project, Task, TaskCount } from "./types";
+import type { LlmAgent, NotesDocument, NotesDocumentSummary, Project, Task, TaskCount } from "./types";
 import AppSidebar from "./components/Sidebar";
 import ProjectTable from "./components/ProjectTable";
 import NewProjectDialog from "./components/NewProjectDialog";
@@ -13,7 +13,8 @@ import Settings from "./components/Settings";
 import TaskTable from "./components/TaskTable";
 import Notes from "./components/Notes";
 import Terminal from "./components/Terminal";
-import Agent from "./components/Agent";
+import AgentTable from "./components/AgentTable";
+import AgentFullPage from "./components/AgentFullPage";
 import ProjectFullPage from "./components/ProjectFullPage";
 import TaskFullPage from "./components/TaskFullPage";
 import { perfStart, perfEnd } from "./lib/perf";
@@ -47,7 +48,7 @@ interface DiffStat {
   lines_removed: number | null;
 }
 
-type View = "projects" | "settings" | "tasks" | "notes" | "terminal" | "agent" | "project-detail" | "task-detail";
+type View = "projects" | "settings" | "tasks" | "notes" | "terminal" | "agent" | "agent-detail" | "project-detail" | "task-detail";
 
 const NOTES_SELECTED_KEY = "pm-selected-note-id";
 
@@ -72,6 +73,7 @@ export default function App() {
   const [taskProject, setTaskProject] = useState<Project | null>(null);
   const [fullPageProject, setFullPageProject] = useState<Project | null>(null);
   const [fullPageTask, setFullPageTask] = useState<Task | null>(null);
+  const [fullPageAgent, setFullPageAgent] = useState<LlmAgent | null>(null);
   const [taskDetailReturnView, setTaskDetailReturnView] = useState<"tasks" | "project-detail">("tasks");
   const [taskCounts, setTaskCounts] = useState<Map<string, TaskCount>>(new Map());
 
@@ -421,6 +423,16 @@ export default function App() {
     setView("agent");
   };
 
+  const handleOpenAgentDetail = (agent: LlmAgent | null) => {
+    setFullPageAgent(agent);
+    setView("agent-detail");
+  };
+
+  const handleBackFromAgentDetail = () => {
+    setFullPageAgent(null);
+    setView("agent");
+  };
+
   const handleOpenFullPage = (project: Project) => {
     setRecentProjectKeys(recordRecentProjectAccess(project.folder_key));
     setSelected(project);
@@ -546,8 +558,17 @@ export default function App() {
                 <Terminal />
               </div>
             ) : view === "agent" ? (
-              <div id="agent" tabIndex={-1} className="min-h-0 flex-1 flex flex-col overflow-hidden">
-                <Agent />
+              <div id="agent" tabIndex={-1} className="m-2 mb-0 min-h-0 flex-1 outline-none">
+                <AgentTable onOpenAgent={handleOpenAgentDetail} />
+              </div>
+            ) : view === "agent-detail" ? (
+              <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                <AgentFullPage
+                  agent={fullPageAgent}
+                  onBack={handleBackFromAgentDetail}
+                  onSaved={(saved) => { setFullPageAgent(saved); }}
+                  onDeleted={handleBackFromAgentDetail}
+                />
               </div>
             ) : view === "project-detail" && fullPageProject ? (
               <div className="min-h-0 flex-1 flex flex-col overflow-hidden">

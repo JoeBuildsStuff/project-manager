@@ -151,6 +151,27 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     )
     .map_err(|e| e.to_string())?;
 
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS llm_agents (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL UNIQUE,
+            provider   TEXT,
+            model      TEXT,
+            reasoning  TEXT,
+            permission_mode TEXT,
+            system_prompt TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );",
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN reasoning TEXT", []);
+    let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN permission_mode TEXT", []);
+    let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN system_prompt TEXT", []);
+
+    let _ = conn.execute("ALTER TABLE tasks ADD COLUMN assignee_kind TEXT", []);
+    let _ = conn.execute("ALTER TABLE tasks ADD COLUMN assignee_id INTEGER", []);
+
     // Ensure table_views table exists
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS table_views (
@@ -2785,9 +2806,30 @@ pub struct Task {
     pub description: Option<String>,
     pub status: String,
     pub priority: Option<String>,
+    pub assignee_kind: Option<String>,
+    pub assignee_id: Option<i64>,
+    pub assignee_name: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LlmAgent {
+    pub id: i64,
+    pub name: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub reasoning: Option<String>,
+    pub permission_mode: Option<String>,
+    pub system_prompt: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskAssignmentOptions {
+    pub llm_agents: Vec<LlmAgent>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2837,18 +2879,132 @@ fn map_task_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         description: row.get(5)?,
         status: row.get(6)?,
         priority: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
-        completed_at: row.get(10)?,
+        assignee_kind: row.get(8)?,
+        assignee_id: row.get(9)?,
+        assignee_name: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        completed_at: row.get(13)?,
     })
+}
+
+fn map_llm_agent_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmAgent> {
+    Ok(LlmAgent {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        provider: row.get(2)?,
+        model: row.get(3)?,
+        reasoning: row.get(4)?,
+        permission_mode: row.get(5)?,
+        system_prompt: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+fn validate_llm_agent_configuration(
+    provider: &str,
+    model: &str,
+    reasoning: &str,
+    permission_mode: Option<&str>,
+) -> Result<(), String> {
+    let valid_model = match provider {
+        "codex" => matches!(
+            model,
+            "GPT-5.4"
+                | "GPT-5.2-Codex"
+                | "GPT-5.1-Codex-Max"
+                | "GPT-5.4-Mini"
+                | "GPT-5.3-Codex"
+                | "GPT-5.2"
+                | "GPT-5.1-Codex-Mini"
+        ),
+        "claude" => matches!(
+            model,
+            "default"
+                | "sonnet"
+                | "opus"
+                | "haiku"
+                | "sonnet[1m]"
+                | "opus[1m]"
+                | "opusplan"
+                | "claude-opus-4-6"
+                | "claude-sonnet-4-6"
+                | "claude-haiku-4-5"
+                | "Opus 4.6"
+                | "Opus 4.7"
+                | "Sonnet 4.6"
+                | "Haiku 4.5"
+        ),
+        "cursor" => matches!(model, "Auto" | "Premium" | "Composer 2"),
+        _ => false,
+    };
+
+    if !valid_model {
+        return Err("Invalid provider/model combination".into());
+    }
+
+    if !matches!(reasoning, "low" | "medium" | "high" | "extra_high") {
+        return Err("Invalid reasoning option".into());
+    }
+
+    if let Some(permission_mode) = permission_mode {
+        if provider != "claude" {
+            return Err("Permission mode is only supported for Claude agents".into());
+        }
+
+        if !matches!(
+            permission_mode,
+            "default"
+                | "acceptEdits"
+                | "plan"
+                | "auto"
+                | "dontAsk"
+                | "bypassPermissions"
+        ) {
+            return Err("Invalid Claude permission mode".into());
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_task_assignee(
+    conn: &Connection,
+    assignee_kind: Option<&str>,
+    assignee_id: Option<i64>,
+) -> Result<(), String> {
+    match (assignee_kind, assignee_id) {
+        (None, None) => Ok(()),
+        (Some("llm_agent"), Some(id)) => {
+            let exists: Option<i64> = conn
+                .query_row("SELECT id FROM llm_agents WHERE id = ?1", [id], |row| row.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if exists.is_some() {
+                Ok(())
+            } else {
+                Err("Assigned LLM agent not found".into())
+            }
+        }
+        (Some(_), None) | (None, Some(_)) => Err("Assignee kind and id must both be provided".into()),
+        (Some(other), Some(_)) => Err(format!("Unsupported assignee kind: {other}")),
+    }
 }
 
 fn get_task_by_id(conn: &Connection, id: i64) -> Result<Task, String> {
     conn.query_row(
         "SELECT t.id, t.folder_key, m.folder_name, t.kind, t.title, t.description, t.status, t.priority,
+                CASE WHEN t.assignee_kind = 'llm_agent' THEN t.assignee_kind ELSE NULL END AS assignee_kind,
+                CASE WHEN t.assignee_kind = 'llm_agent' THEN t.assignee_id ELSE NULL END AS assignee_id,
+                CASE
+                    WHEN t.assignee_kind = 'llm_agent' THEN a.name
+                    ELSE NULL
+                END AS assignee_name,
                 t.created_at, t.updated_at, t.completed_at
          FROM tasks t
          LEFT JOIN project_metadata m ON m.folder_key = t.folder_key
+         LEFT JOIN llm_agents a ON t.assignee_kind = 'llm_agent' AND a.id = t.assignee_id
          WHERE t.id = ?1",
         [id],
         map_task_row,
@@ -2882,9 +3038,16 @@ pub fn get_tasks(
     let conn = open_db(&state)?;
     let sql = format!(
         "SELECT t.id, t.folder_key, m.folder_name, t.kind, t.title, t.description, t.status, t.priority,
+                CASE WHEN t.assignee_kind = 'llm_agent' THEN t.assignee_kind ELSE NULL END AS assignee_kind,
+                CASE WHEN t.assignee_kind = 'llm_agent' THEN t.assignee_id ELSE NULL END AS assignee_id,
+                CASE
+                    WHEN t.assignee_kind = 'llm_agent' THEN a.name
+                    ELSE NULL
+                END AS assignee_name,
                 t.created_at, t.updated_at, t.completed_at
          FROM tasks t
          LEFT JOIN project_metadata m ON m.folder_key = t.folder_key
+         LEFT JOIN llm_agents a ON t.assignee_kind = 'llm_agent' AND a.id = t.assignee_id
          WHERE (?1 IS NULL OR t.folder_key = ?1)
          {}",
         TASK_LIST_ORDER
@@ -2915,33 +3078,32 @@ pub fn create_task(
     kind: Option<String>,
     description: Option<String>,
     priority: Option<String>,
+    assignee_kind: Option<String>,
+    assignee_id: Option<i64>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Task, String> {
     let conn = open_db(&state)?;
     let kind = kind.unwrap_or_else(|| "task".into());
     let priority = priority.unwrap_or_else(|| "medium".into());
+    validate_task_assignee(&conn, assignee_kind.as_deref(), assignee_id)?;
 
     conn.execute(
-        "INSERT INTO tasks (folder_key, kind, title, description, priority)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![folder_key, kind, title, description, priority],
+        "INSERT INTO tasks (folder_key, kind, title, description, priority, assignee_kind, assignee_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            folder_key,
+            kind,
+            title,
+            description,
+            priority,
+            assignee_kind,
+            assignee_id
+        ],
     )
     .map_err(|e| e.to_string())?;
 
     let id = conn.last_insert_rowid();
-    let task = conn
-        .query_row(
-            "SELECT t.id, t.folder_key, m.folder_name, t.kind, t.title, t.description, t.status, t.priority,
-                    t.created_at, t.updated_at, t.completed_at
-             FROM tasks t
-             LEFT JOIN project_metadata m ON m.folder_key = t.folder_key
-             WHERE t.id = ?1",
-            [id],
-            map_task_row,
-        )
-        .map_err(|e| e.to_string())?;
-
-    Ok(task)
+    get_task_by_id(&conn, id)
 }
 
 #[tauri::command]
@@ -2952,9 +3114,12 @@ pub fn update_task(
     status: Option<String>,
     kind: Option<String>,
     priority: Option<String>,
+    assignee_kind: Option<String>,
+    assignee_id: Option<i64>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<Task, String> {
     let conn = open_db(&state)?;
+    validate_task_assignee(&conn, assignee_kind.as_deref(), assignee_id)?;
 
     // Build dynamic UPDATE
     let mut sets: Vec<String> = vec!["updated_at = datetime('now')".into()];
@@ -2985,6 +3150,10 @@ pub fn update_task(
         params.push(Box::new(p.clone()));
         sets.push(format!("priority = ?{}", params.len()));
     }
+    params.push(Box::new(assignee_kind.clone()));
+    sets.push(format!("assignee_kind = ?{}", params.len()));
+    params.push(Box::new(assignee_id));
+    sets.push(format!("assignee_id = ?{}", params.len()));
 
     params.push(Box::new(id));
     let id_param_idx = params.len();
@@ -2999,19 +3168,7 @@ pub fn update_task(
     conn.execute(&sql, param_refs.as_slice())
         .map_err(|e| e.to_string())?;
 
-    let task = conn
-        .query_row(
-            "SELECT t.id, t.folder_key, m.folder_name, t.kind, t.title, t.description, t.status, t.priority,
-                    t.created_at, t.updated_at, t.completed_at
-             FROM tasks t
-             LEFT JOIN project_metadata m ON m.folder_key = t.folder_key
-             WHERE t.id = ?1",
-            [id],
-            map_task_row,
-        )
-        .map_err(|e| e.to_string())?;
-
-    Ok(task)
+    get_task_by_id(&conn, id)
 }
 
 #[tauri::command]
@@ -3020,6 +3177,203 @@ pub fn delete_task(id: i64, state: tauri::State<'_, WorkspaceState>) -> Result<(
     conn.execute("DELETE FROM tasks WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_llm_agents(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<LlmAgent>, String> {
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt, created_at, updated_at
+             FROM llm_agents
+             ORDER BY lower(name), id",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], map_llm_agent_row)
+        .map_err(|e| e.to_string())?;
+
+    let mut agents = Vec::new();
+    for row in rows {
+        agents.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(agents)
+}
+
+#[tauri::command]
+pub fn create_llm_agent(
+    name: String,
+    provider: Option<String>,
+    model: Option<String>,
+    reasoning: Option<String>,
+    permission_mode: Option<String>,
+    system_prompt: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<LlmAgent, String> {
+    let conn = open_db(&state)?;
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() {
+        return Err("LLM agent name is required".into());
+    }
+
+    let provider = provider
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Provider is required".to_string())?;
+    let model = model
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Model is required".to_string())?;
+    let reasoning = reasoning
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "medium".into());
+    let permission_mode = permission_mode
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let system_prompt = system_prompt
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    validate_llm_agent_configuration(&provider, &model, &reasoning, permission_mode.as_deref())?;
+
+    conn.execute(
+        "INSERT INTO llm_agents (name, provider, model, reasoning, permission_mode, system_prompt)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            trimmed_name,
+            provider,
+            model,
+            reasoning,
+            permission_mode,
+            system_prompt
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let id = conn.last_insert_rowid();
+    conn.query_row(
+        "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt, created_at, updated_at
+         FROM llm_agents
+         WHERE id = ?1",
+        [id],
+        map_llm_agent_row,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_llm_agent(
+    id: i64,
+    name: String,
+    provider: Option<String>,
+    model: Option<String>,
+    reasoning: Option<String>,
+    permission_mode: Option<String>,
+    system_prompt: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<LlmAgent, String> {
+    let conn = open_db(&state)?;
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() {
+        return Err("LLM agent name is required".into());
+    }
+
+    let provider = provider
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Provider is required".to_string())?;
+    let model = model
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Model is required".to_string())?;
+    let reasoning = reasoning
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "medium".into());
+    let permission_mode = permission_mode
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let system_prompt = system_prompt
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    validate_llm_agent_configuration(&provider, &model, &reasoning, permission_mode.as_deref())?;
+
+    conn.execute(
+        "UPDATE llm_agents
+         SET name = ?1,
+             provider = ?2,
+             model = ?3,
+             reasoning = ?4,
+             permission_mode = ?5,
+             system_prompt = ?6,
+             updated_at = datetime('now')
+         WHERE id = ?7",
+        rusqlite::params![
+            trimmed_name,
+            provider,
+            model,
+            reasoning,
+            permission_mode,
+            system_prompt,
+            id
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.query_row(
+        "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt, created_at, updated_at
+         FROM llm_agents
+         WHERE id = ?1",
+        [id],
+        map_llm_agent_row,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_llm_agent(id: i64, state: tauri::State<'_, WorkspaceState>) -> Result<(), String> {
+    let conn = open_db(&state)?;
+    let assigned_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE assignee_kind = 'llm_agent' AND assignee_id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if assigned_count > 0 {
+        return Err("This LLM agent is still assigned to one or more tasks".into());
+    }
+
+    conn.execute("DELETE FROM llm_agents WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_task_assignment_options(
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<TaskAssignmentOptions, String> {
+    let conn = open_db(&state)?;
+
+    let mut agents_stmt = conn
+        .prepare(
+            "SELECT id, name, provider, model, reasoning, created_at, updated_at
+             FROM llm_agents
+             ORDER BY lower(name), id",
+        )
+        .map_err(|e| e.to_string())?;
+    let agent_rows = agents_stmt
+        .query_map([], map_llm_agent_row)
+        .map_err(|e| e.to_string())?;
+    let mut llm_agents = Vec::new();
+    for row in agent_rows {
+        llm_agents.push(row.map_err(|e| e.to_string())?);
+    }
+
+    Ok(TaskAssignmentOptions { llm_agents })
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import {
 } from "@tanstack/react-table";
 import {
   ArrowLeft,
+  UserRound,
   Plus,
   Search,
   Type,
@@ -64,12 +65,13 @@ import {
 import { DataTableColumnHeader } from "@/components/ui/data-table-column-header";
 import { DataTableViewOptions } from "@/components/ui/data-table-view-options";
 import { cn } from "@/lib/utils";
-import type { Task, Project } from "@/types";
+import type { Task, Project, TaskAssignmentOptions } from "@/types";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import ActiveFilters from "./ActiveFilters";
 import SavedViewPicker from "./SavedViewPicker";
 import { TaskKindBadge, TaskPriorityBadge, TaskStatusBadge } from "./task-badges";
 import type { SavedView } from "@/types";
+import { TaskAssigneeBadge, getTaskAssigneeLabel } from "./task-assignee";
 
 interface Props {
   /** When set, lists and new tasks are scoped to this project; when null, all tasks in the workspace. */
@@ -222,6 +224,21 @@ function buildTaskTableColumns(): ColumnDef<Task>[] {
     cell: ({ getValue }) => <TaskPriorityBadge priority={getValue() as string | null} />,
   },
   {
+    id: "assignee",
+    accessorFn: (row) => row.assignee_name ?? "",
+    enableSorting: true,
+    header: ({ column }) => (
+      <DataTableColumnHeader
+        column={column}
+        title="Assignee"
+        icon={<UserRound className={iconProps} strokeWidth={1.5} />}
+      />
+    ),
+    cell: ({ row }) => (
+      <TaskAssigneeBadge kind={row.original.assignee_kind} name={row.original.assignee_name} />
+    ),
+  },
+  {
     accessorKey: "created_at",
     enableSorting: true,
     header: ({ column }) => (
@@ -260,6 +277,10 @@ export default function TaskTable({ project, allProjects, onBack, onOpenTask, em
   const [newTaskFolderKey, setNewTaskFolderKey] = useState("");
   const [newKind, setNewKind] = useState("task");
   const [newPriority, setNewPriority] = useState("medium");
+  const [assignmentOptions, setAssignmentOptions] = useState<TaskAssignmentOptions>({
+    llm_agents: [],
+  });
+  const [newAssigneeValue, setNewAssigneeValue] = useState("__unassigned__");
   const [creating, setCreating] = useState(false);
 
   const canAddTask = project != null || allProjects.length > 0;
@@ -282,6 +303,14 @@ export default function TaskTable({ project, allProjects, onBack, onOpenTask, em
   useEffect(() => {
     loadViews();
   }, [loadViews]);
+
+  useEffect(() => {
+    invoke<TaskAssignmentOptions>("get_task_assignment_options")
+      .then(setAssignmentOptions)
+      .catch(() => {
+        setAssignmentOptions({ llm_agents: [] });
+      });
+  }, []);
 
   const handleLoadView = useCallback((view: SavedView) => {
     setSorting(JSON.parse(view.sorting));
@@ -347,9 +376,17 @@ export default function TaskTable({ project, allProjects, onBack, onOpenTask, em
         kind: newKind,
         description: null,
         priority: newPriority,
+        assigneeKind: newAssigneeValue.startsWith("llm_agent:")
+            ? "llm_agent"
+            : null,
+        assigneeId:
+          newAssigneeValue === "__unassigned__"
+            ? null
+            : Number(newAssigneeValue.split(":")[1] ?? ""),
       });
       setNewTitle("");
       setNewTaskFolderKey("");
+      setNewAssigneeValue("__unassigned__");
       setNewTaskOpen(false);
       await loadTasks();
     } finally {
@@ -367,6 +404,7 @@ export default function TaskTable({ project, allProjects, onBack, onOpenTask, em
         t.kind.toLowerCase().includes(q) ||
         t.status.toLowerCase().includes(q) ||
         (t.priority ?? "").toLowerCase().includes(q) ||
+        getTaskAssigneeLabel(t).toLowerCase().includes(q) ||
         (t.folder_name ?? "").toLowerCase().includes(q) ||
         t.folder_key.toLowerCase().includes(q),
     );
@@ -580,6 +618,7 @@ export default function TaskTable({ project, allProjects, onBack, onOpenTask, em
                         header.column.id === "kind" && "w-[100px]",
                         header.column.id === "status" && "w-[120px]",
                         header.column.id === "priority" && "w-[100px]",
+                        header.column.id === "assignee" && "w-[160px]",
                         header.column.id === "created_at" && "w-[100px]",
                       )}
                     >
@@ -630,6 +669,7 @@ export default function TaskTable({ project, allProjects, onBack, onOpenTask, em
             setNewTaskFolderKey("");
             setNewKind("task");
             setNewPriority("medium");
+            setNewAssigneeValue("__unassigned__");
           }
         }}
       >
@@ -706,6 +746,22 @@ export default function TaskTable({ project, allProjects, onBack, onOpenTask, em
                 </Select>
               </div>
             </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Assign</label>
+              <Select value={newAssigneeValue} onValueChange={(v) => v && setNewAssigneeValue(v)}>
+                <SelectTrigger className="mt-1 h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__unassigned__">Unassigned</SelectItem>
+                  {assignmentOptions.llm_agents.map((agent) => (
+                    <SelectItem key={`llm_agent:${agent.id}`} value={`llm_agent:${agent.id}`}>
+                      AI · {agent.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter>
             <Button
@@ -716,6 +772,7 @@ export default function TaskTable({ project, allProjects, onBack, onOpenTask, em
                 setNewTaskFolderKey("");
                 setNewKind("task");
                 setNewPriority("medium");
+                setNewAssigneeValue("__unassigned__");
                 setNewTaskOpen(false);
               }}
             >

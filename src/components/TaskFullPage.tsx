@@ -9,6 +9,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -21,8 +28,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { Project, Task } from "@/types";
+import type { Project, Task, TaskAssignmentOptions } from "@/types";
 import { TaskKindBadge, TaskPriorityBadge, TaskStatusBadge } from "./task-badges";
+import { TaskAssigneeBadge } from "./task-assignee";
 
 const TASK_STATUS_OPTIONS = ["open", "in-progress", "done", "closed"] as const;
 const TASK_KIND_OPTIONS = ["task", "issue", "request", "next-step"] as const;
@@ -110,6 +118,11 @@ export default function TaskFullPage({
   const [status, setStatus] = useState(task.status);
   const [kind, setKind] = useState(task.kind);
   const [priority, setPriority] = useState(task.priority ?? "medium");
+  const [assigneeKind, setAssigneeKind] = useState<Task["assignee_kind"]>(task.assignee_kind);
+  const [assigneeId, setAssigneeId] = useState<number | null>(task.assignee_id);
+  const [assignmentOptions, setAssignmentOptions] = useState<TaskAssignmentOptions>({
+    llm_agents: [],
+  });
   const [saving, setSaving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -121,12 +134,20 @@ export default function TaskFullPage({
     status,
     kind,
     priority,
+    assigneeKind,
+    assigneeId,
   });
-  stateRef.current = { title, description, status, kind, priority };
+  stateRef.current = { title, description, status, kind, priority, assigneeKind, assigneeId };
 
   const textSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const TEXT_SAVE_DEBOUNCE_MS = 500;
+  const assigneeValue =
+    assigneeKind && assigneeId != null ? `${assigneeKind}:${assigneeId}` : "__unassigned__";
+  const currentAssigneeName =
+    assigneeKind === "llm_agent"
+        ? assignmentOptions.llm_agents.find((agent) => agent.id === assigneeId)?.name ?? task.assignee_name
+        : null;
 
   const persistTask = useCallback(
     async (overrides?: Partial<typeof stateRef.current>) => {
@@ -143,6 +164,8 @@ export default function TaskFullPage({
           status: s.status,
           kind: s.kind,
           priority: s.priority,
+          assigneeKind: s.assigneeKind,
+          assigneeId: s.assigneeId,
         });
         await Promise.resolve(onTaskSaved(updated));
       } catch (err) {
@@ -155,11 +178,21 @@ export default function TaskFullPage({
   );
 
   useEffect(() => {
+    invoke<TaskAssignmentOptions>("get_task_assignment_options")
+      .then(setAssignmentOptions)
+      .catch(() => {
+        setAssignmentOptions({ llm_agents: [] });
+      });
+  }, []);
+
+  useEffect(() => {
     setTitle(task.title);
     setDescription(task.description ?? "");
     setStatus(task.status);
     setKind(task.kind);
     setPriority(task.priority ?? "medium");
+    setAssigneeKind(task.assignee_kind);
+    setAssigneeId(task.assignee_id);
     setError("");
   }, [task]);
 
@@ -234,6 +267,7 @@ export default function TaskFullPage({
           </span>
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <TaskAssigneeBadge kind={assigneeKind} name={currentAssigneeName} />
           <TaskStatusBadge status={status} appearance="inline" />
           <TaskKindBadge kind={kind} appearance="inline" />
           <TaskPriorityBadge priority={priority} appearance="inline" />
@@ -315,6 +349,42 @@ export default function TaskFullPage({
                       }}
                     />
                   </dl>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Assign</label>
+                  <Select
+                    value={assigneeValue}
+                    onValueChange={(value) => {
+                      if (!value) return;
+                      clearTextSaveDebounce();
+                      if (value === "__unassigned__") {
+                        setAssigneeKind(null);
+                        setAssigneeId(null);
+                        void persistTask({ assigneeKind: null, assigneeId: null });
+                        return;
+                      }
+
+                      const [kindValue, idValue] = value.split(":");
+                      const parsedId = Number(idValue);
+                      const nextKind: "llm_agent" | null = kindValue === "llm_agent" ? "llm_agent" : null;
+                      if (!nextKind || Number.isNaN(parsedId)) return;
+                      setAssigneeKind(nextKind);
+                      setAssigneeId(parsedId);
+                      void persistTask({ assigneeKind: nextKind, assigneeId: parsedId });
+                    }}
+                  >
+                    <SelectTrigger className="mt-1 h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__unassigned__">Unassigned</SelectItem>
+                      {assignmentOptions.llm_agents.map((agent) => (
+                        <SelectItem key={`llm_agent:${agent.id}`} value={`llm_agent:${agent.id}`}>
+                          AI · {agent.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 
