@@ -10,12 +10,17 @@ interface TerminalProps {
   workingDirectory?: string;
   hideHeader?: boolean;
   sessionId?: string;
+  commandRequest?: {
+    nonce: number;
+    command: string;
+  } | null;
 }
 
 export default function Terminal({
   workingDirectory,
   hideHeader,
   sessionId,
+  commandRequest,
 }: TerminalProps = {}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -23,6 +28,14 @@ export default function Terminal({
   const idRef = useRef<string>(
     sessionId ?? `term-${Math.random().toString(36).slice(2, 10)}`
   );
+  const readyRef = useRef(false);
+  const pendingCommandRef = useRef<string | null>(null);
+  const lastCommandNonceRef = useRef<number | null>(null);
+
+  const sendCommandToPty = async (command: string) => {
+    const id = idRef.current;
+    await invoke("pty_write", { id, data: `${command}\r` });
+  };
 
   useEffect(() => {
     const container = containerRef.current;
@@ -54,6 +67,7 @@ export default function Terminal({
     let unlistenOutput: UnlistenFn | null = null;
     let unlistenExit: UnlistenFn | null = null;
     let disposed = false;
+    readyRef.current = false;
 
     const setup = async () => {
       unlistenOutput = await listen<{ id: string; data: string }>(
@@ -79,6 +93,12 @@ export default function Terminal({
           cols,
           rows,
         });
+        readyRef.current = true;
+        if (pendingCommandRef.current) {
+          const command = pendingCommandRef.current;
+          pendingCommandRef.current = null;
+          await sendCommandToPty(command);
+        }
       } catch (err) {
         term.write(`\x1b[31mfailed to start pty: ${String(err)}\x1b[0m\r\n`);
       }
@@ -105,6 +125,8 @@ export default function Terminal({
 
     return () => {
       disposed = true;
+      readyRef.current = false;
+      pendingCommandRef.current = null;
       unlistenOutput?.();
       unlistenExit?.();
       disposeData.dispose();
@@ -118,6 +140,24 @@ export default function Terminal({
     };
     // Re-mount pty when workingDirectory changes.
   }, [workingDirectory]);
+
+  useEffect(() => {
+    if (!commandRequest) {
+      return;
+    }
+
+    if (lastCommandNonceRef.current === commandRequest.nonce) {
+      return;
+    }
+    lastCommandNonceRef.current = commandRequest.nonce;
+
+    if (readyRef.current) {
+      sendCommandToPty(commandRequest.command).catch(() => {});
+      return;
+    }
+
+    pendingCommandRef.current = commandRequest.command;
+  }, [commandRequest]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">

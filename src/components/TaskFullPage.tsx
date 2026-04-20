@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, ChevronDown, Loader2, Trash } from "lucide-react";
+import { ArrowLeft, ChevronDown, Loader2, Play, Trash } from "lucide-react";
+import { toast } from "sonner";
 import Terminal from "./Terminal";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -31,6 +32,7 @@ import {
 import type { Project, Task, TaskAssignmentOptions } from "@/types";
 import { TaskKindBadge, TaskPriorityBadge, TaskStatusBadge } from "./task-badges";
 import { TaskAssigneeBadge } from "./task-assignee";
+import { buildAgentLaunchCommand, buildTaskAgentPrompt } from "@/lib/agent-launch";
 
 const TASK_STATUS_OPTIONS = ["open", "in-progress", "done", "closed"] as const;
 const TASK_KIND_OPTIONS = ["task", "issue", "request", "next-step"] as const;
@@ -127,6 +129,7 @@ export default function TaskFullPage({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
+  const [commandRequest, setCommandRequest] = useState<{ nonce: number; command: string } | null>(null);
 
   const stateRef = useRef({
     title,
@@ -148,6 +151,10 @@ export default function TaskFullPage({
     assigneeKind === "llm_agent"
         ? assignmentOptions.llm_agents.find((agent) => agent.id === assigneeId)?.name ?? task.assignee_name
         : null;
+  const assignedAgent =
+    assigneeKind === "llm_agent"
+      ? assignmentOptions.llm_agents.find((agent) => agent.id === assigneeId) ?? null
+      : null;
 
   const persistTask = useCallback(
     async (overrides?: Partial<typeof stateRef.current>) => {
@@ -250,6 +257,35 @@ export default function TaskFullPage({
     }
   };
 
+  const handleExecuteAgent = () => {
+    if (!taskCwd) {
+      toast.error("Task terminal has no working directory");
+      return;
+    }
+
+    if (!assignedAgent) {
+      toast.error("Assign an agent before launching");
+      return;
+    }
+
+    const prompt = buildTaskAgentPrompt(title, description);
+    const launch = buildAgentLaunchCommand(assignedAgent, prompt, taskCwd);
+
+    if (!launch.command) {
+      toast.error("Unable to build agent launch command", {
+        description: launch.reason,
+      });
+      return;
+    }
+
+    setCommandRequest({
+      nonce: Date.now(),
+      command: launch.command,
+    });
+
+    toast.success(`Launching ${assignedAgent.name} in the task terminal`);
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 p-1">
@@ -278,17 +314,28 @@ export default function TaskFullPage({
         <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col lg:w-[min(420px,42vw)] lg:flex-none">
           <ScrollArea className="h-full min-h-0 rounded-lg border">
             <div className="space-y-5 p-2">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <SectionLabel>Task</SectionLabel>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className=""
-                  onClick={() => setDeleteOpen(true)}
-                >
-                  <Trash className="h-3.5 w-3.5" />
-                  Delete
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleExecuteAgent}
+                    disabled={!taskCwd || !assignedAgent}
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    Execute
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className=""
+                    onClick={() => setDeleteOpen(true)}
+                  >
+                    <Trash className="h-3.5 w-3.5" />
+                    Delete
+                  </Button>
+                </div>
               </div>
 
               {error && <p className="text-xs text-destructive">{error}</p>}
@@ -406,6 +453,7 @@ export default function TaskFullPage({
             workingDirectory={taskCwd}
             hideHeader
             sessionId={`task-pty-${task.id}`}
+            commandRequest={commandRequest}
           />
         </div>
       </div>
