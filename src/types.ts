@@ -68,6 +68,14 @@ export interface LlmAgent {
     cwd: string | null;
     additional_directories: string[] | null;
   } | null;
+  cursor_config: {
+    reasoning_effort: string | null;
+    mode: string | null;
+    sandbox_mode: string | null;
+    cloud_mode: boolean | null;
+    max_mode: boolean | null;
+    worktree: boolean | null;
+  } | null;
   created_at: string | null;
   updated_at: string | null;
 }

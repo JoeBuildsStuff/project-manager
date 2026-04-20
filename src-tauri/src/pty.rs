@@ -160,13 +160,11 @@ pub fn pty_start(
 }
 
 #[tauri::command]
-pub fn pty_write(
-    state: State<'_, PtyState>,
-    id: String,
-    data: String,
-) -> Result<(), String> {
+pub fn pty_write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), String> {
     let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
-    let session = map.get_mut(&id).ok_or_else(|| "pty session not found".to_string())?;
+    let session = map
+        .get_mut(&id)
+        .ok_or_else(|| "pty session not found".to_string())?;
     session
         .writer
         .write_all(data.as_bytes())
@@ -183,7 +181,9 @@ pub fn pty_resize(
     rows: u16,
 ) -> Result<(), String> {
     let map = state.sessions.lock().map_err(|e| e.to_string())?;
-    let session = map.get(&id).ok_or_else(|| "pty session not found".to_string())?;
+    let session = map
+        .get(&id)
+        .ok_or_else(|| "pty session not found".to_string())?;
     session
         .master
         .resize(PtySize {

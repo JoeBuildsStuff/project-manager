@@ -54,6 +54,17 @@ const CURSOR_REASONING_OPTIONS = [
   { value: "extra_high", label: "Extra High" },
 ] as const;
 
+const CURSOR_MODE_OPTIONS = [
+  { value: "agent", label: "Agent", description: "Default Cursor mode with full coding access." },
+  { value: "plan", label: "Plan", description: "Designs an approach before coding." },
+  { value: "ask", label: "Ask", description: "Read-only exploration without editing files." },
+] as const;
+
+const CURSOR_SANDBOX_OPTIONS = [
+  { value: "enabled", label: "Enabled", description: "Runs with Cursor sandbox controls enabled." },
+  { value: "disabled", label: "Disabled", description: "Runs without Cursor sandbox restrictions." },
+] as const;
+
 const CLAUDE_PERMISSION_OPTIONS = [
   { value: "default", label: "Default", description: "Prompts for permission on first use of each tool." },
   { value: "acceptEdits", label: "Accept Edits", description: "Automatically accepts file edit permissions for the session." },
@@ -109,6 +120,11 @@ type AgentDraft = {
   };
   cursor: {
     reasoning: (typeof CURSOR_REASONING_OPTIONS)[number]["value"];
+    mode: (typeof CURSOR_MODE_OPTIONS)[number]["value"];
+    sandboxMode: (typeof CURSOR_SANDBOX_OPTIONS)[number]["value"];
+    cloudMode: boolean;
+    maxMode: boolean;
+    worktree: boolean;
   };
 };
 
@@ -134,6 +150,11 @@ function createEmptyDraft(): AgentDraft {
     },
     cursor: {
       reasoning: "medium",
+      mode: "agent",
+      sandboxMode: "enabled",
+      cloudMode: false,
+      maxMode: false,
+      worktree: false,
     },
   };
 }
@@ -175,7 +196,14 @@ function toDraft(agent: LlmAgent): AgentDraft {
     },
     cursor: {
       reasoning:
-        CURSOR_REASONING_OPTIONS.find((option) => option.value === agent.reasoning)?.value ?? "medium",
+        CURSOR_REASONING_OPTIONS.find((option) => option.value === (agent.cursor_config?.reasoning_effort ?? agent.reasoning))?.value ?? "medium",
+      mode:
+        CURSOR_MODE_OPTIONS.find((option) => option.value === agent.cursor_config?.mode)?.value ?? "agent",
+      sandboxMode:
+        CURSOR_SANDBOX_OPTIONS.find((option) => option.value === agent.cursor_config?.sandbox_mode)?.value ?? "enabled",
+      cloudMode: agent.cursor_config?.cloud_mode ?? false,
+      maxMode: agent.cursor_config?.max_mode ?? false,
+      worktree: agent.cursor_config?.worktree ?? false,
     },
   };
 }
@@ -303,6 +331,17 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
               additional_directories: additionalDirectories.length > 0 ? additionalDirectories : null,
             }
             : null,
+        cursorConfig:
+          next.provider === "cursor"
+            ? {
+              reasoning_effort: next.cursor.reasoning,
+              mode: next.cursor.mode,
+              sandbox_mode: next.cursor.sandboxMode,
+              cloud_mode: next.cursor.cloudMode,
+              max_mode: next.cursor.maxMode,
+              worktree: next.cursor.worktree,
+            }
+            : null,
       };
 
       const requestId = ++saveSequenceRef.current;
@@ -373,6 +412,11 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
     draft.codex.profile,
     draft.codex.cwd,
     draft.codex.additionalDirectories,
+    draft.cursor.mode,
+    draft.cursor.sandboxMode,
+    draft.cursor.cloudMode,
+    draft.cursor.maxMode,
+    draft.cursor.worktree,
     clearTextSaveDebounce,
     persistDraft,
   ]);
@@ -459,13 +503,13 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
     return (
       <AgentDetailRow
         label="Reasoning"
-        description="Cursor keeps the shared reasoning selector."
+        description="Cursor reasoning is stored in provider config and summarized in the shared field."
       >
         <Select
           value={draft.cursor.reasoning}
           onValueChange={(value) => {
             const nextValue = value as AgentDraft["cursor"]["reasoning"];
-            const nextDraft = { ...draft, cursor: { reasoning: nextValue } };
+            const nextDraft = { ...draft, cursor: { ...draft.cursor, reasoning: nextValue } };
             updateAndPersist(nextDraft, { cursor: nextDraft.cursor });
           }}
         >
@@ -555,11 +599,24 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
 
     return (
       <AgentDetailRow
-        label="Permissions"
-        description="Cursor-specific access controls are not configured yet."
-        disabled
+        label="Sandbox"
+        description={CURSOR_SANDBOX_OPTIONS.find((option) => option.value === draft.cursor.sandboxMode)?.description}
       >
-        <DisabledField label="No provider-specific permissions" />
+        <Select
+          value={draft.cursor.sandboxMode}
+          onValueChange={(value) => {
+            const nextValue = value as AgentDraft["cursor"]["sandboxMode"];
+            const nextDraft = { ...draft, cursor: { ...draft.cursor, sandboxMode: nextValue } };
+            updateAndPersist(nextDraft, { cursor: nextDraft.cursor });
+          }}
+        >
+          <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {CURSOR_SANDBOX_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </AgentDetailRow>
     );
   };
@@ -652,13 +709,82 @@ export default function AgentFullPage({ agent, onBack, onSaved, onDeleted }: Pro
     }
 
     return (
-      <AgentDetailRow
-        label="Advanced"
-        description="Cursor-specific advanced options are not configured yet."
-        disabled
-      >
-        <DisabledField label="No advanced Cursor fields" />
-      </AgentDetailRow>
+      <>
+        <AgentDetailRow
+          label="Mode"
+          description={CURSOR_MODE_OPTIONS.find((option) => option.value === draft.cursor.mode)?.description}
+        >
+          <Select
+            value={draft.cursor.mode}
+            onValueChange={(value) => {
+              const nextValue = value as AgentDraft["cursor"]["mode"];
+              const nextDraft = { ...draft, cursor: { ...draft.cursor, mode: nextValue } };
+              updateAndPersist(nextDraft, { cursor: nextDraft.cursor });
+            }}
+          >
+            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {CURSOR_MODE_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </AgentDetailRow>
+        <AgentDetailRow
+          label="Cloud"
+          description="Maps to `-c` / `--cloud` to hand work off to Cursor Cloud Agent."
+        >
+          <Select
+            value={draft.cursor.cloudMode ? "on" : "off"}
+            onValueChange={(value) => {
+              const nextDraft = { ...draft, cursor: { ...draft.cursor, cloudMode: value === "on" } };
+              updateAndPersist(nextDraft, { cursor: nextDraft.cursor });
+            }}
+          >
+            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              <SelectItem value="on">On</SelectItem>
+            </SelectContent>
+          </Select>
+        </AgentDetailRow>
+        <AgentDetailRow
+          label="Max Mode"
+          description="Tracks whether Cursor Max Mode should start on for supported models."
+        >
+          <Select
+            value={draft.cursor.maxMode ? "on" : "off"}
+            onValueChange={(value) => {
+              const nextDraft = { ...draft, cursor: { ...draft.cursor, maxMode: value === "on" } };
+              updateAndPersist(nextDraft, { cursor: nextDraft.cursor });
+            }}
+          >
+            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              <SelectItem value="on">On</SelectItem>
+            </SelectContent>
+          </Select>
+        </AgentDetailRow>
+        <AgentDetailRow
+          label="Worktree"
+          description="Maps to `--worktree` so Cursor edits in an isolated git worktree."
+        >
+          <Select
+            value={draft.cursor.worktree ? "on" : "off"}
+            onValueChange={(value) => {
+              const nextDraft = { ...draft, cursor: { ...draft.cursor, worktree: value === "on" } };
+              updateAndPersist(nextDraft, { cursor: nextDraft.cursor });
+            }}
+          >
+            <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Off</SelectItem>
+              <SelectItem value="on">On</SelectItem>
+            </SelectContent>
+          </Select>
+        </AgentDetailRow>
+      </>
     );
   };
 

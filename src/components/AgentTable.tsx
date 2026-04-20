@@ -62,6 +62,8 @@ const PERMISSION_LABELS: Record<string, string> = {
   auto: "Auto",
   dontAsk: "Don't Ask",
   bypassPermissions: "Bypass Permissions",
+  "sandbox: enabled": "Sandbox Enabled",
+  "sandbox: disabled": "Sandbox Disabled",
 };
 
 function formatProvider(v: string | null) {

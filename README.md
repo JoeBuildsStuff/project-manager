@@ -73,9 +73,64 @@ Adjust the path if you installed the app somewhere else.
 - **Settings:** Change workspace path; optional **GitHub personal access token** (stored in the system keychain) for features that call the GitHub API (e.g. updating a repository homepage URL from the app).
 - **Updates:** When built with the updater configured, the app can check for and install newer releases (also exposed from the native menu where enabled).
 
+### Agents
+
+- **Agent registry:** Workspace agents are stored in `llm_agents` and can be assigned to tasks.
+- **Shared shell, provider-specific forms:** The agent editor keeps one consistent section order across providers: `Provider`, `Model`, `Instructions`, `Reasoning / Effort`, `Access / Permissions`, `Advanced`.
+- **Codex + Claude + Cursor wiring:** The frontend renders provider-specific controls inside that shared frame. Claude exposes effort and Claude permission mode. Codex exposes reasoning effort plus approval policy, sandbox mode, search mode, profile, working directory, and additional writable directories. Cursor exposes reasoning effort plus CLI mode, sandbox mode, cloud handoff, max mode, and worktree behavior.
+- **Compatibility layer:** The backend still populates legacy summary columns like `reasoning`, `permission_mode`, and `system_prompt` so existing tables and older rows continue to work while the richer provider config shape is adopted.
+
 ## Data conventions
 
 The app expects `NULL` for unknown values — not `"N/A"`, `"none"`, or empty strings. `NULL` columns render as blank in tables. Writes from sync and edits should keep that invariant.
+
+## Agent configuration architecture
+
+The current agent setup is intentionally not modeled as one flat shared schema across all providers. Claude and Codex overlap on a few concepts, but the semantics are not actually the same:
+
+- `model` is shared cleanly.
+- `instructions` is the shared UI concept for startup behavior.
+- `reasoning / effort` is shared at the layout level, but the options are provider-specific.
+- `permissions` is not truly shared. Claude uses one permission mode. Codex uses separate approval and sandbox controls.
+
+Because of that, the app uses a hybrid model:
+
+- Shared top-level fields for stable concepts:
+  `name`, `provider`, `model`, `instructions`
+- Provider-specific config blobs for divergent behavior:
+  `claude_config`, `codex_config`, `cursor_config`
+
+This was chosen for a few reasons:
+
+- It keeps the UX consistent without pretending the providers have identical capabilities.
+- It avoids overloading Claude-specific field names like `system_prompt` or `permission_mode` for Codex.
+- It gives the backend room to grow each provider independently without forcing schema churn for unrelated providers.
+- It keeps the agents table and task assignment flows simple by preserving a small common summary shape.
+
+### Current mapping
+
+- **Claude**
+  - `instructions` maps to Claude-style system prompt behavior.
+  - `claude_config.effort` stores Claude effort.
+  - `claude_config.permission_mode` stores Claude permission mode.
+- **Codex**
+  - `instructions` stores startup instructions for the agent.
+  - `codex_config.reasoning_effort` stores OpenAI reasoning effort.
+  - `codex_config.approval_policy` and `codex_config.sandbox_mode` model Codex access control separately.
+  - `codex_config.web_search`, `profile`, `cwd`, and `additional_directories` map to the Codex CLI startup options we want to preserve in the app.
+- **Cursor**
+  - `instructions` stores startup instructions for the agent.
+  - `cursor_config.reasoning_effort` stores the shared Cursor reasoning setting.
+  - `cursor_config.mode` stores Cursor CLI mode (`agent`, `plan`, `ask`).
+  - `cursor_config.sandbox_mode` stores Cursor sandbox state.
+  - `cursor_config.cloud_mode`, `max_mode`, and `worktree` preserve the main Cursor CLI execution flags we expose in the app.
+
+### Files to read
+
+- Frontend agent editor: [src/components/AgentFullPage.tsx](./src/components/AgentFullPage.tsx)
+- Agent table summary: [src/components/AgentTable.tsx](./src/components/AgentTable.tsx)
+- Shared frontend types: [src/types.ts](./src/types.ts)
+- Tauri persistence and validation: [src-tauri/src/commands.rs](./src-tauri/src/commands.rs)
 
 ## Repository layout (high level)
 

@@ -130,8 +130,14 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     let _ = conn.execute("PRAGMA foreign_keys = ON", []);
     // Idempotent migrations – add columns if missing
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN stage TEXT", []);
-    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN actions_status TEXT", []);
-    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN actions_run_url TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN actions_status TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN actions_run_url TEXT",
+        [],
+    );
 
     // Ensure tasks table exists (migration for existing databases)
     conn.execute_batch(
@@ -163,6 +169,7 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
             instructions TEXT,
             claude_config TEXT,
             codex_config TEXT,
+            cursor_config TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         );",
@@ -174,6 +181,7 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN instructions TEXT", []);
     let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN claude_config TEXT", []);
     let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN codex_config TEXT", []);
+    let _ = conn.execute("ALTER TABLE llm_agents ADD COLUMN cursor_config TEXT", []);
 
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN assignee_kind TEXT", []);
     let _ = conn.execute("ALTER TABLE tasks ADD COLUMN assignee_id INTEGER", []);
@@ -421,8 +429,14 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
         [],
     );
     let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN stage TEXT", []);
-    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN actions_status TEXT", []);
-    let _ = conn.execute("ALTER TABLE project_metadata ADD COLUMN actions_run_url TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN actions_status TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN actions_run_url TEXT",
+        [],
+    );
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS table_views (
@@ -2116,7 +2130,9 @@ pub fn get_git_activity(
     let output = Command::new("git")
         .args([
             "-C",
-            repo_path.to_str().ok_or_else(|| "Invalid repository path".to_string())?,
+            repo_path
+                .to_str()
+                .ok_or_else(|| "Invalid repository path".to_string())?,
             "log",
             "--since=370 days ago",
             "--date=short",
@@ -2838,6 +2854,16 @@ pub struct CodexAgentConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CursorAgentConfig {
+    pub reasoning_effort: Option<String>,
+    pub mode: Option<String>,
+    pub sandbox_mode: Option<String>,
+    pub cloud_mode: Option<bool>,
+    pub max_mode: Option<bool>,
+    pub worktree: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LlmAgent {
     pub id: i64,
     pub name: String,
@@ -2849,6 +2875,7 @@ pub struct LlmAgent {
     pub instructions: Option<String>,
     pub claude_config: Option<ClaudeAgentConfig>,
     pub codex_config: Option<CodexAgentConfig>,
+    pub cursor_config: Option<CursorAgentConfig>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -2922,8 +2949,9 @@ fn map_llm_agent_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmAgent> {
     let instructions: Option<String> = row.get(7)?;
     let claude_config_json: Option<String> = row.get(8)?;
     let codex_config_json: Option<String> = row.get(9)?;
-    let created_at: Option<String> = row.get(10)?;
-    let updated_at: Option<String> = row.get(11)?;
+    let cursor_config_json: Option<String> = row.get(10)?;
+    let created_at: Option<String> = row.get(11)?;
+    let updated_at: Option<String> = row.get(12)?;
 
     let instructions = instructions.or_else(|| {
         if provider.as_deref() == Some("claude") {
@@ -2979,6 +3007,26 @@ fn map_llm_agent_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmAgent> {
         }
     }
 
+    let mut cursor_config = cursor_config_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<CursorAgentConfig>(json).ok());
+    if provider.as_deref() == Some("cursor") {
+        if let Some(config) = cursor_config.as_mut() {
+            if config.reasoning_effort.is_none() {
+                config.reasoning_effort = reasoning.clone();
+            }
+        } else if reasoning.is_some() {
+            cursor_config = Some(CursorAgentConfig {
+                reasoning_effort: reasoning.clone(),
+                mode: None,
+                sandbox_mode: None,
+                cloud_mode: None,
+                max_mode: None,
+                worktree: None,
+            });
+        }
+    }
+
     Ok(LlmAgent {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -2990,6 +3038,7 @@ fn map_llm_agent_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LlmAgent> {
         instructions,
         claude_config,
         codex_config,
+        cursor_config,
         created_at,
         updated_at,
     })
@@ -3003,6 +3052,7 @@ fn validate_llm_agent_configuration(
     permission_mode: Option<&str>,
     claude_config: Option<&ClaudeAgentConfig>,
     codex_config: Option<&CodexAgentConfig>,
+    cursor_config: Option<&CursorAgentConfig>,
 ) -> Result<(), String> {
     if !matches!(provider, "codex" | "claude" | "cursor") {
         return Err("Invalid provider".into());
@@ -3018,8 +3068,8 @@ fn validate_llm_agent_configuration(
 
     match provider {
         "claude" => {
-            if codex_config.is_some() {
-                return Err("Codex config is not supported for Claude agents".into());
+            if codex_config.is_some() || cursor_config.is_some() {
+                return Err("Provider-specific config is not supported for Claude agents".into());
             }
             if let Some(value) = reasoning {
                 if !matches!(value, "low" | "medium" | "high" | "max") {
@@ -3049,20 +3099,15 @@ fn validate_llm_agent_configuration(
             if let Some(mode) = permission_mode {
                 if !matches!(
                     mode,
-                    "default"
-                        | "acceptEdits"
-                        | "plan"
-                        | "auto"
-                        | "dontAsk"
-                        | "bypassPermissions"
+                    "default" | "acceptEdits" | "plan" | "auto" | "dontAsk" | "bypassPermissions"
                 ) {
                     return Err("Invalid Claude permission mode".into());
                 }
             }
         }
         "codex" => {
-            if claude_config.is_some() || permission_mode.is_some() {
-                return Err("Claude permissions are not supported for Codex agents".into());
+            if claude_config.is_some() || cursor_config.is_some() || permission_mode.is_some() {
+                return Err("Claude and Cursor config is not supported for Codex agents".into());
             }
             if let Some(value) = reasoning {
                 if !matches!(value, "none" | "low" | "medium" | "high" | "xhigh") {
@@ -3071,7 +3116,10 @@ fn validate_llm_agent_configuration(
             }
             if let Some(config) = codex_config {
                 if let Some(reasoning_effort) = config.reasoning_effort.as_deref() {
-                    if !matches!(reasoning_effort, "none" | "low" | "medium" | "high" | "xhigh") {
+                    if !matches!(
+                        reasoning_effort,
+                        "none" | "low" | "medium" | "high" | "xhigh"
+                    ) {
                         return Err("Invalid Codex reasoning option".into());
                     }
                 }
@@ -3097,11 +3145,28 @@ fn validate_llm_agent_configuration(
         }
         "cursor" => {
             if claude_config.is_some() || codex_config.is_some() || permission_mode.is_some() {
-                return Err("Provider-specific config is not supported for Cursor agents".into());
+                return Err("Claude and Codex config is not supported for Cursor agents".into());
             }
             if let Some(value) = reasoning {
                 if !matches!(value, "low" | "medium" | "high" | "extra_high") {
                     return Err("Invalid Cursor reasoning option".into());
+                }
+            }
+            if let Some(config) = cursor_config {
+                if let Some(reasoning_effort) = config.reasoning_effort.as_deref() {
+                    if !matches!(reasoning_effort, "low" | "medium" | "high" | "extra_high") {
+                        return Err("Invalid Cursor reasoning option".into());
+                    }
+                }
+                if let Some(mode) = config.mode.as_deref() {
+                    if !matches!(mode, "agent" | "plan" | "ask") {
+                        return Err("Invalid Cursor mode".into());
+                    }
+                }
+                if let Some(sandbox_mode) = config.sandbox_mode.as_deref() {
+                    if !matches!(sandbox_mode, "enabled" | "disabled") {
+                        return Err("Invalid Cursor sandbox mode".into());
+                    }
                 }
             }
         }
@@ -3120,7 +3185,9 @@ fn validate_task_assignee(
         (None, None) => Ok(()),
         (Some("llm_agent"), Some(id)) => {
             let exists: Option<i64> = conn
-                .query_row("SELECT id FROM llm_agents WHERE id = ?1", [id], |row| row.get(0))
+                .query_row("SELECT id FROM llm_agents WHERE id = ?1", [id], |row| {
+                    row.get(0)
+                })
                 .optional()
                 .map_err(|e| e.to_string())?;
             if exists.is_some() {
@@ -3129,7 +3196,9 @@ fn validate_task_assignee(
                 Err("Assigned LLM agent not found".into())
             }
         }
-        (Some(_), None) | (None, Some(_)) => Err("Assignee kind and id must both be provided".into()),
+        (Some(_), None) | (None, Some(_)) => {
+            Err("Assignee kind and id must both be provided".into())
+        }
         (Some(other), Some(_)) => Err(format!("Unsupported assignee kind: {other}")),
     }
 }
@@ -3327,7 +3396,7 @@ pub fn get_llm_agents(state: tauri::State<'_, WorkspaceState>) -> Result<Vec<Llm
     let mut stmt = conn
         .prepare(
             "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt,
-                    instructions, claude_config, codex_config, created_at, updated_at
+                    instructions, claude_config, codex_config, cursor_config, created_at, updated_at
              FROM llm_agents
              ORDER BY lower(name), id",
         )
@@ -3355,6 +3424,7 @@ pub fn create_llm_agent(
     system_prompt: Option<String>,
     claude_config: Option<ClaudeAgentConfig>,
     codex_config: Option<CodexAgentConfig>,
+    cursor_config: Option<CursorAgentConfig>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<LlmAgent, String> {
     let conn = open_db(&state)?;
@@ -3428,13 +3498,31 @@ pub fn create_llm_agent(
             .cwd
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        config.additional_directories = config.additional_directories.map(|values| {
-            values
-                .into_iter()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .collect::<Vec<_>>()
-        }).filter(|values| !values.is_empty());
+        config.additional_directories = config
+            .additional_directories
+            .map(|values| {
+                values
+                    .into_iter()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|values| !values.is_empty());
+        config
+    });
+    let cursor_config = cursor_config.map(|mut config| {
+        config.reasoning_effort = config
+            .reasoning_effort
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.mode = config
+            .mode
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.sandbox_mode = config
+            .sandbox_mode
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
         config
     });
 
@@ -3446,6 +3534,7 @@ pub fn create_llm_agent(
         permission_mode.as_deref(),
         claude_config.as_ref(),
         codex_config.as_ref(),
+        cursor_config.as_ref(),
     )?;
 
     let stored_reasoning = match provider.as_str() {
@@ -3454,6 +3543,10 @@ pub fn create_llm_agent(
             .and_then(|config| config.effort.clone())
             .or(reasoning.clone()),
         "codex" => codex_config
+            .as_ref()
+            .and_then(|config| config.reasoning_effort.clone())
+            .or(reasoning.clone()),
+        "cursor" => cursor_config
             .as_ref()
             .and_then(|config| config.reasoning_effort.clone())
             .or(reasoning.clone()),
@@ -3478,6 +3571,10 @@ pub fn create_llm_agent(
                 (None, None) => None,
             }
         }
+        "cursor" => cursor_config
+            .as_ref()
+            .and_then(|config| config.sandbox_mode.as_ref())
+            .map(|sandbox_mode| format!("sandbox: {sandbox_mode}")),
         _ => None,
     };
     let stored_system_prompt = if provider == "claude" {
@@ -3495,13 +3592,18 @@ pub fn create_llm_agent(
         .map(serde_json::to_string)
         .transpose()
         .map_err(|e| e.to_string())?;
+    let cursor_config_json = cursor_config
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| e.to_string())?;
 
     conn.execute(
         "INSERT INTO llm_agents (
             name, provider, model, reasoning, permission_mode, system_prompt,
-            instructions, claude_config, codex_config
+            instructions, claude_config, codex_config, cursor_config
          )
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             trimmed_name,
             provider,
@@ -3511,7 +3613,8 @@ pub fn create_llm_agent(
             stored_system_prompt,
             instructions,
             claude_config_json,
-            codex_config_json
+            codex_config_json,
+            cursor_config_json
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -3519,7 +3622,7 @@ pub fn create_llm_agent(
     let id = conn.last_insert_rowid();
     conn.query_row(
         "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt,
-                instructions, claude_config, codex_config, created_at, updated_at
+                instructions, claude_config, codex_config, cursor_config, created_at, updated_at
          FROM llm_agents
          WHERE id = ?1",
         [id],
@@ -3540,6 +3643,7 @@ pub fn update_llm_agent(
     system_prompt: Option<String>,
     claude_config: Option<ClaudeAgentConfig>,
     codex_config: Option<CodexAgentConfig>,
+    cursor_config: Option<CursorAgentConfig>,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<LlmAgent, String> {
     let conn = open_db(&state)?;
@@ -3613,13 +3717,31 @@ pub fn update_llm_agent(
             .cwd
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        config.additional_directories = config.additional_directories.map(|values| {
-            values
-                .into_iter()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .collect::<Vec<_>>()
-        }).filter(|values| !values.is_empty());
+        config.additional_directories = config
+            .additional_directories
+            .map(|values| {
+                values
+                    .into_iter()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|values| !values.is_empty());
+        config
+    });
+    let cursor_config = cursor_config.map(|mut config| {
+        config.reasoning_effort = config
+            .reasoning_effort
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.mode = config
+            .mode
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        config.sandbox_mode = config
+            .sandbox_mode
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
         config
     });
 
@@ -3631,6 +3753,7 @@ pub fn update_llm_agent(
         permission_mode.as_deref(),
         claude_config.as_ref(),
         codex_config.as_ref(),
+        cursor_config.as_ref(),
     )?;
 
     let stored_reasoning = match provider.as_str() {
@@ -3639,6 +3762,10 @@ pub fn update_llm_agent(
             .and_then(|config| config.effort.clone())
             .or(reasoning.clone()),
         "codex" => codex_config
+            .as_ref()
+            .and_then(|config| config.reasoning_effort.clone())
+            .or(reasoning.clone()),
+        "cursor" => cursor_config
             .as_ref()
             .and_then(|config| config.reasoning_effort.clone())
             .or(reasoning.clone()),
@@ -3663,6 +3790,10 @@ pub fn update_llm_agent(
                 (None, None) => None,
             }
         }
+        "cursor" => cursor_config
+            .as_ref()
+            .and_then(|config| config.sandbox_mode.as_ref())
+            .map(|sandbox_mode| format!("sandbox: {sandbox_mode}")),
         _ => None,
     };
     let stored_system_prompt = if provider == "claude" {
@@ -3680,6 +3811,11 @@ pub fn update_llm_agent(
         .map(serde_json::to_string)
         .transpose()
         .map_err(|e| e.to_string())?;
+    let cursor_config_json = cursor_config
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| e.to_string())?;
 
     conn.execute(
         "UPDATE llm_agents
@@ -3692,8 +3828,9 @@ pub fn update_llm_agent(
              instructions = ?7,
              claude_config = ?8,
              codex_config = ?9,
+             cursor_config = ?10,
              updated_at = datetime('now')
-         WHERE id = ?10",
+         WHERE id = ?11",
         rusqlite::params![
             trimmed_name,
             provider,
@@ -3704,6 +3841,7 @@ pub fn update_llm_agent(
             instructions,
             claude_config_json,
             codex_config_json,
+            cursor_config_json,
             id
         ],
     )
@@ -3711,7 +3849,7 @@ pub fn update_llm_agent(
 
     conn.query_row(
         "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt,
-                instructions, claude_config, codex_config, created_at, updated_at
+                instructions, claude_config, codex_config, cursor_config, created_at, updated_at
          FROM llm_agents
          WHERE id = ?1",
         [id],
@@ -3748,7 +3886,7 @@ pub fn get_task_assignment_options(
     let mut agents_stmt = conn
         .prepare(
             "SELECT id, name, provider, model, reasoning, permission_mode, system_prompt,
-                    instructions, claude_config, codex_config, created_at, updated_at
+                    instructions, claude_config, codex_config, cursor_config, created_at, updated_at
              FROM llm_agents
              ORDER BY lower(name), id",
         )
@@ -3784,7 +3922,10 @@ pub fn save_secret(
 }
 
 #[tauri::command]
-pub fn get_secret(key: String, cache: tauri::State<'_, TokenCache>) -> Result<Option<String>, String> {
+pub fn get_secret(
+    key: String,
+    cache: tauri::State<'_, TokenCache>,
+) -> Result<Option<String>, String> {
     // Check in-memory cache first to avoid repeated keychain prompts
     if let Some(v) = cache.cache.lock().unwrap().get(&key).cloned() {
         return Ok(Some(v));
@@ -3924,8 +4065,8 @@ pub async fn llm_request(
         if let Some(k) = map.get(secret_key).cloned() {
             k
         } else {
-            let entry = keyring::Entry::new(KEYRING_SERVICE, secret_key)
-                .map_err(|e| e.to_string())?;
+            let entry =
+                keyring::Entry::new(KEYRING_SERVICE, secret_key).map_err(|e| e.to_string())?;
             match entry.get_password() {
                 Ok(k) => {
                     map.insert(secret_key.to_string(), k.clone());
@@ -3969,10 +4110,16 @@ pub async fn llm_request(
     }
 
     // Execute the request
-    let resp = req.send().await.map_err(|e| format!("HTTP request failed: {e}"))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {e}"))?;
 
     let status = resp.status();
-    let resp_body = resp.text().await.map_err(|e| format!("Failed to read response: {e}"))?;
+    let resp_body = resp
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response: {e}"))?;
 
     if status.is_success() {
         Ok(resp_body)
@@ -4137,9 +4284,20 @@ fn fetch_latest_run(
     let runs = json.get("workflow_runs")?.as_array()?;
     let run = runs.first()?;
 
-    let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let conclusion = run.get("conclusion").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let html_url = run.get("html_url").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let status = run
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let conclusion = run
+        .get("conclusion")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let html_url = run
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     // If the run is in-flight, report the live status; otherwise report the conclusion.
     let effective = if status == "in_progress" || status == "queued" || status == "waiting" {
@@ -4241,9 +4399,8 @@ pub fn refresh_actions_status(
                         _ => None,
                     };
                     let run = fetch_latest_run(client, host, repo, owner_repo, token);
-                    let (actions_status, actions_run_url) = run
-                        .map(|(s, u)| (Some(s), u))
-                        .unwrap_or((None, None));
+                    let (actions_status, actions_run_url) =
+                        run.map(|(s, u)| (Some(s), u)).unwrap_or((None, None));
                     ActionsStat {
                         folder_key: folder_key.clone(),
                         actions_status,
@@ -4253,10 +4410,7 @@ pub fn refresh_actions_status(
             })
             .collect();
 
-        handles
-            .into_iter()
-            .filter_map(|h| h.join().ok())
-            .collect()
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
     });
 
     // Persist results back to DB
