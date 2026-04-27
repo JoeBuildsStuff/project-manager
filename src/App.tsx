@@ -660,6 +660,9 @@ export default function App() {
             }
           }}
           initialName={newProjectInitialName}
+          projects={allProjects}
+          workspacePath={workspacePath}
+          onOpenSettings={() => setView("settings")}
           onCreated={async (folderKey) => {
             await load();
             loadTaskCounts();

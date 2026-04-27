@@ -157,6 +157,7 @@ export default function Settings({ workspacePath, onWorkspaceChanged, onBack }: 
 
   // Secret fields
   const githubToken = useSecretField("github_token");
+  const giteaToken = useSecretField("gitea_token");
   const anthropicKey = useSecretField("anthropic_api_key");
   const openaiKey = useSecretField("openai_api_key");
   const cerebrasKey = useSecretField("cerebras_api_key");
@@ -279,6 +280,20 @@ export default function Settings({ workspacePath, onWorkspaceChanged, onBack }: 
             placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
             maskedDisplay="ghp_••••••••••••••••••••"
             field={githubToken}
+          />
+
+          <SecretField
+            icon={<KeyRound className="h-4 w-4" />}
+            title="Gitea Token"
+            description="A personal access token for creating repos and checking private repo metadata on https://gitea.joe-taylor.me. Stored securely in your macOS Keychain."
+            help={
+              <p className="text-xs text-muted-foreground mt-1">
+                Create one in your Gitea account settings with repository read/write access.
+              </p>
+            }
+            placeholder="gitea_xxxxxxxxxxxxxxxxxxxx"
+            maskedDisplay="gitea_••••••••••••••••••"
+            field={giteaToken}
           />
 
           {/* LLM API Keys */}

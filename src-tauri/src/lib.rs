@@ -137,6 +137,7 @@ pub fn run() {
             delete_project_folder,
             rename_project_folder,
             create_project,
+            create_project_from_onboarding,
             open_in_finder,
             open_in_vscode,
             open_url,

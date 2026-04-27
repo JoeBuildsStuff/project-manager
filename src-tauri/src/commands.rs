@@ -2398,6 +2398,349 @@ pub fn create_project(
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewProjectOnboardingRequest {
+    pub mode: String,
+    pub folder_key: String,
+    pub folder_name: String,
+    pub status: String,
+    pub category: String,
+    pub description: Option<String>,
+    pub repo_url: Option<String>,
+    pub remote: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NewProjectOnboardingResult {
+    pub folder_key: String,
+    pub steps: Vec<String>,
+}
+
+const GITEA_BASE_URL: &str = "https://gitea.joe-taylor.me";
+
+fn validate_folder_key(folder_key: &str) -> Result<(), String> {
+    let trimmed = folder_key.trim();
+    if trimmed.is_empty() {
+        return Err("Project folder name is required.".into());
+    }
+    if trimmed.starts_with('.') {
+        return Err("Project folder name cannot start with a dot.".into());
+    }
+
+    let path = Path::new(trimmed);
+    if !path.is_relative() {
+        return Err("Project folder name must be relative to the workspace.".into());
+    }
+
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => {}
+            _ => return Err("Project folder name contains an invalid path segment.".into()),
+        }
+    }
+
+    Ok(())
+}
+
+fn run_command(mut command: Command, label: &str) -> Result<(), String> {
+    let output = command
+        .output()
+        .map_err(|e| format!("{label} failed to start: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let details = if !stderr.is_empty() { stderr } else { stdout };
+    if details.is_empty() {
+        Err(format!("{label} failed with status {}", output.status))
+    } else {
+        Err(format!("{label} failed: {details}"))
+    }
+}
+
+fn run_git(repo_path: &Path, args: &[&str], label: &str) -> Result<(), String> {
+    let mut command = Command::new("git");
+    command.current_dir(repo_path).args(args);
+    run_command(command, label)
+}
+
+fn create_github_repo(name: &str, private: bool, token: &str) -> Result<String, String> {
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post("https://api.github.com/user/repos")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "project-manager")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .json(&serde_json::json!({
+            "name": name,
+            "private": private,
+            "auto_init": false
+        }))
+        .send()
+        .map_err(|e| format!("GitHub API request failed: {e}"))?;
+
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("GitHub repo creation failed {}: {}", status, body));
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("Invalid GitHub response: {e}"))?;
+    value
+        .get("clone_url")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
+        .ok_or_else(|| "GitHub response did not include clone_url.".into())
+}
+
+fn create_gitea_repo(name: &str, private: bool, token: &str) -> Result<String, String> {
+    let client = reqwest::blocking::Client::new();
+    let user_url = format!("{}/api/v1/user", GITEA_BASE_URL);
+    let user_resp = client
+        .get(&user_url)
+        .header("Authorization", format!("token {}", token))
+        .header("Accept", "application/json")
+        .header("User-Agent", "project-manager")
+        .send()
+        .map_err(|e| format!("Gitea user lookup failed: {e}"))?;
+    let user_status = user_resp.status();
+    let user_body = user_resp.text().unwrap_or_default();
+    if !user_status.is_success() {
+        return Err(format!("Gitea user lookup failed {}: {}", user_status, user_body));
+    }
+
+    let user_value: serde_json::Value =
+        serde_json::from_str(&user_body).map_err(|e| format!("Invalid Gitea user response: {e}"))?;
+    let _owner = user_value
+        .get("login")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Gitea user response did not include login.".to_string())?;
+
+    let repo_url = format!("{}/api/v1/user/repos", GITEA_BASE_URL);
+    let resp = client
+        .post(&repo_url)
+        .header("Authorization", format!("token {}", token))
+        .header("Accept", "application/json")
+        .header("User-Agent", "project-manager")
+        .json(&serde_json::json!({
+            "name": name,
+            "private": private,
+            "auto_init": false
+        }))
+        .send()
+        .map_err(|e| format!("Gitea repo creation failed: {e}"))?;
+
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("Gitea repo creation failed {}: {}", status, body));
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("Invalid Gitea response: {e}"))?;
+    value
+        .get("clone_url")
+        .and_then(|v| v.as_str())
+        .or_else(|| value.get("html_url").and_then(|v| v.as_str()))
+        .map(|v| v.to_string())
+        .ok_or_else(|| "Gitea response did not include clone_url.".into())
+}
+
+fn push_with_token(repo_path: &Path, host: &str, token: &str) -> Result<(), String> {
+    let auth_header = match host {
+        "github" => format!("Authorization: Bearer {}", token),
+        "gitea" => format!("Authorization: token {}", token),
+        _ => return Err("Unsupported remote host.".into()),
+    };
+    let extra_header = format!("http.extraHeader={}", auth_header);
+    run_git(
+        repo_path,
+        &["-c", &extra_header, "push", "-u", "origin", "main"],
+        "Push initial commit",
+    )
+}
+
+fn upsert_project_from_folder(
+    state: &WorkspaceState,
+    folder_key: &str,
+    folder_name: &str,
+    status: &str,
+    category: &str,
+    description: Option<String>,
+    folder_path: &Path,
+) -> Result<(), String> {
+    let conn = open_db(state)?;
+    let repo_path = repo_path_for_folder(folder_path);
+    let remote_url = repo_path
+        .as_ref()
+        .and_then(|rp| git_remote_url(rp, "origin").or_else(|| git_remote_url(rp, "upstream")));
+    let host = remote_url.as_ref().map(|u| detect_host(u));
+    let owner_repo = remote_url.as_ref().and_then(|u| extract_owner_repo(u));
+    let (commit_count, last_commit_date, days_since) = repo_path
+        .as_ref()
+        .map(|rp| git_commit_stats(rp))
+        .unwrap_or((None, None, None));
+    let description = description.or_else(|| extract_readme_description(folder_path));
+
+    conn.execute(
+        "INSERT INTO project_metadata
+            (folder_key, folder_name, description, status, category, repo, host, repo_owner,
+             commit_count, last_commit_date, days_since_last_commit)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(folder_key) DO UPDATE SET
+           folder_name = excluded.folder_name,
+           description = excluded.description,
+           status      = excluded.status,
+           category    = excluded.category,
+           repo        = excluded.repo,
+           host        = excluded.host,
+           repo_owner  = excluded.repo_owner,
+           commit_count = excluded.commit_count,
+           last_commit_date = excluded.last_commit_date,
+           days_since_last_commit = excluded.days_since_last_commit,
+           updated_at = datetime('now')",
+        rusqlite::params![
+            folder_key,
+            folder_name,
+            description,
+            status,
+            category,
+            remote_url,
+            host,
+            owner_repo,
+            commit_count,
+            last_commit_date,
+            days_since,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn create_project_from_onboarding(
+    request: NewProjectOnboardingRequest,
+    state: tauri::State<'_, WorkspaceState>,
+    cache: tauri::State<'_, TokenCache>,
+) -> Result<NewProjectOnboardingResult, String> {
+    validate_folder_key(&request.folder_key)?;
+    let ws = workspace(&state)?;
+    let folder_path = ws.join(&request.folder_key);
+    if folder_path.exists() {
+        return Err("A folder with that name already exists.".into());
+    }
+
+    let mut steps = Vec::new();
+    let description = request
+        .description
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
+    match request.mode.as_str() {
+        "clone" => {
+            let repo_url = request
+                .repo_url
+                .as_ref()
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| "Repository URL is required.".to_string())?;
+            let mut command = Command::new("git");
+            command.args(["clone", repo_url]).arg(&folder_path);
+            run_command(command, "Clone repository")?;
+            steps.push(format!("Cloned {}", repo_url));
+        }
+        "scratch" => {
+            fs::create_dir_all(&folder_path).map_err(|e| format!("Create folder failed: {e}"))?;
+            steps.push(format!("Created folder {}", request.folder_key));
+
+            let readme = format!(
+                "# {}\n\n{}\n",
+                request.folder_name,
+                description
+                    .as_deref()
+                    .unwrap_or("Created with Project Manager.")
+            );
+            fs::write(folder_path.join("README.md"), readme)
+                .map_err(|e| format!("Write README.md failed: {e}"))?;
+            fs::write(
+                folder_path.join(".gitignore"),
+                "node_modules/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n",
+            )
+            .map_err(|e| format!("Write .gitignore failed: {e}"))?;
+            steps.push("Added README.md and .gitignore".into());
+
+            run_git(&folder_path, &["init", "-b", "main"], "Initialize git repository")?;
+            run_git(&folder_path, &["add", "README.md", ".gitignore"], "Stage starter files")?;
+            run_git(
+                &folder_path,
+                &[
+                    "-c",
+                    "user.name=Project Manager",
+                    "-c",
+                    "user.email=project-manager@local.invalid",
+                    "commit",
+                    "-m",
+                    "Initial commit",
+                ],
+                "Create initial commit",
+            )?;
+            steps.push("Initialized git repository".into());
+
+            match request.remote.as_deref().unwrap_or("none") {
+                "none" => {}
+                "github_public" | "github_private" => {
+                    let token = get_cached_or_keychain_secret("github_token", &cache)?
+                        .ok_or_else(|| "No GitHub token configured. Add one in Settings.".to_string())?;
+                    let private = request.remote.as_deref() == Some("github_private");
+                    let remote_url = create_github_repo(&request.folder_name, private, &token)?;
+                    run_git(&folder_path, &["remote", "add", "origin", &remote_url], "Add GitHub remote")?;
+                    push_with_token(&folder_path, "github", &token)?;
+                    steps.push(format!(
+                        "Created {} GitHub repository",
+                        if private { "private" } else { "public" }
+                    ));
+                }
+                "gitea_private" | "gitea_public" => {
+                    let token = get_cached_or_keychain_secret("gitea_token", &cache)?
+                        .ok_or_else(|| "No Gitea token configured. Add one in Settings.".to_string())?;
+                    let private = request.remote.as_deref() != Some("gitea_public");
+                    let remote_url = create_gitea_repo(&request.folder_name, private, &token)?;
+                    run_git(&folder_path, &["remote", "add", "origin", &remote_url], "Add Gitea remote")?;
+                    push_with_token(&folder_path, "gitea", &token)?;
+                    steps.push(format!(
+                        "Created {} Gitea repository",
+                        if private { "private" } else { "public" }
+                    ));
+                }
+                _ => return Err("Unsupported remote selection.".into()),
+            }
+        }
+        _ => return Err("Unsupported project source.".into()),
+    }
+
+    upsert_project_from_folder(
+        &state,
+        &request.folder_key,
+        &request.folder_name,
+        &request.status,
+        &request.category,
+        description,
+        &folder_path,
+    )?;
+    steps.push("Updated project metadata".into());
+
+    Ok(NewProjectOnboardingResult {
+        folder_key: request.folder_key,
+        steps,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Native workspace sync – discovers projects and populates the DB
 // ---------------------------------------------------------------------------
