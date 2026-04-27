@@ -1,0 +1,14 @@
+https://linear.app/docs/github-integration#skip-nav
+https://linear.app/docs/github-integration
+https://linear.app/docs/github-integration#
+https://linear.app/docs/github#overview
+https://linear.app/docs/github#enable-the-github-integration
+https://linear.app/docs/github#personal-account-connection
+https://linear.app/docs/github#linking-linear-issues-to-github-prs
+https://linear.app/docs/github#enable-commit-linking
+https://linear.app/docs/github#link-through-pull-requests
+https://linear.app/docs/github#issue-status-updates
+https://linear.app/docs/github#branch-specific-rules
+https://linear.app/docs/github#auto-assign-and-move-issue-to-start
+https://linear.app/docs/github#configure-github-issues-sync
+https://linear.app/docs/github-to-linear

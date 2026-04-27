@@ -36,7 +36,7 @@ impl WorkspaceState {
 // ---------------------------------------------------------------------------
 
 pub struct TokenCache {
-    pub cache: Mutex<std::collections::HashMap<String, String>>,
+    pub cache: Mutex<std::collections::HashMap<String, zeroize::Zeroizing<String>>>,
 }
 
 impl TokenCache {
@@ -3904,9 +3904,265 @@ pub fn get_task_assignment_options(
 
 // ---------------------------------------------------------------------------
 // Secure token storage (OS Keychain)
+//
+// On macOS we go directly through Keychain Services (SecItem* APIs) rather
+// than the `keyring` crate so we can:
+//   * pin items to `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` — the
+//     secret is only readable while the device is unlocked and never syncs
+//     to iCloud Keychain.
+//   * use a single, consistent code path for add / read / update / delete /
+//     exists, with explicit `kSecMatchLimit` and return-attribute flags as
+//     Apple's docs prescribe.
+//
+// On other platforms we fall back to the `keyring` crate's native backend.
 // ---------------------------------------------------------------------------
 
 const KEYRING_SERVICE: &str = "com.joebuilds.project-manager";
+
+fn allowed_secret_key(key: &str) -> Result<&str, String> {
+    match key {
+        "github_token"
+        | "gitea_token"
+        | "anthropic_api_key"
+        | "openai_api_key"
+        | "cerebras_api_key" => Ok(key),
+        _ => Err("Unsupported secret key".into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos_keychain {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::data::CFData;
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::{CFString, CFStringRef};
+    use security_framework_sys::access_control::kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
+    use security_framework_sys::base::{errSecItemNotFound, errSecSuccess};
+    use security_framework_sys::item::{
+        kSecAttrAccount, kSecAttrService, kSecAttrSynchronizable, kSecClass,
+        kSecClassGenericPassword, kSecMatchLimit, kSecReturnData, kSecValueData,
+    };
+    use security_framework_sys::keychain_item::{
+        SecItemAdd, SecItemCopyMatching, SecItemDelete, SecItemUpdate,
+    };
+
+    use super::KEYRING_SERVICE;
+
+    // `kSecAttrAccessible` (the dictionary key) is not re-exported by
+    // security-framework-sys, so we link it directly from Security.framework.
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        static kSecAttrAccessible: CFStringRef;
+    }
+
+    fn ident_pairs(account: &str) -> Vec<(CFString, CFType)> {
+        vec![
+            (
+                unsafe { CFString::wrap_under_get_rule(kSecClass) },
+                unsafe { CFString::wrap_under_get_rule(kSecClassGenericPassword).into_CFType() },
+            ),
+            (
+                unsafe { CFString::wrap_under_get_rule(kSecAttrService) },
+                CFString::from(KEYRING_SERVICE).into_CFType(),
+            ),
+            (
+                unsafe { CFString::wrap_under_get_rule(kSecAttrAccount) },
+                CFString::from(account).into_CFType(),
+            ),
+            // Pin to local device — never sync to iCloud Keychain.
+            (
+                unsafe { CFString::wrap_under_get_rule(kSecAttrSynchronizable) },
+                CFBoolean::false_value().into_CFType(),
+            ),
+        ]
+    }
+
+    fn map_status(status: i32) -> Result<(), String> {
+        if status == errSecSuccess {
+            Ok(())
+        } else {
+            Err(security_framework::base::Error::from_code(status).to_string())
+        }
+    }
+
+    pub fn save(account: &str, value: &str) -> Result<(), String> {
+        let value_data = CFData::from_buffer(value.as_bytes());
+
+        // Try update-in-place first to preserve any existing accessibility / ACL
+        // metadata. If the item doesn't exist yet, add it.
+        let query = CFDictionary::from_CFType_pairs(&ident_pairs(account));
+        let update_attrs = CFDictionary::from_CFType_pairs(&[(
+            unsafe { CFString::wrap_under_get_rule(kSecValueData) },
+            value_data.clone().into_CFType(),
+        )]);
+        let upd_status = unsafe {
+            SecItemUpdate(
+                query.as_concrete_TypeRef(),
+                update_attrs.as_concrete_TypeRef(),
+            )
+        };
+        if upd_status == errSecSuccess {
+            return Ok(());
+        }
+        if upd_status != errSecItemNotFound {
+            return map_status(upd_status);
+        }
+
+        let mut attrs = ident_pairs(account);
+        attrs.push((
+            unsafe { CFString::wrap_under_get_rule(kSecValueData) },
+            value_data.into_CFType(),
+        ));
+        attrs.push((
+            unsafe { CFString::wrap_under_get_rule(kSecAttrAccessible) },
+            unsafe {
+                CFString::wrap_under_get_rule(kSecAttrAccessibleWhenUnlockedThisDeviceOnly)
+                    .into_CFType()
+            },
+        ));
+        let add_dict = CFDictionary::from_CFType_pairs(&attrs);
+        let add_status =
+            unsafe { SecItemAdd(add_dict.as_concrete_TypeRef(), std::ptr::null_mut()) };
+        map_status(add_status)
+    }
+
+    pub fn read(account: &str) -> Result<Option<String>, String> {
+        let mut attrs = ident_pairs(account);
+        attrs.push((
+            unsafe { CFString::wrap_under_get_rule(kSecMatchLimit) },
+            CFNumber::from(1i32).into_CFType(),
+        ));
+        attrs.push((
+            unsafe { CFString::wrap_under_get_rule(kSecReturnData) },
+            CFBoolean::true_value().into_CFType(),
+        ));
+        let query = CFDictionary::from_CFType_pairs(&attrs);
+        let mut result: core_foundation_sys::base::CFTypeRef = std::ptr::null();
+        let status = unsafe { SecItemCopyMatching(query.as_concrete_TypeRef(), &mut result) };
+        match status {
+            s if s == errSecSuccess => {
+                if result.is_null() {
+                    return Ok(None);
+                }
+                let data = unsafe { CFData::wrap_under_create_rule(result as _) };
+                let s = std::str::from_utf8(data.bytes())
+                    .map_err(|e| format!("invalid utf8 in keychain item: {e}"))?
+                    .to_string();
+                Ok(Some(s))
+            }
+            s if s == errSecItemNotFound => Ok(None),
+            s => Err(security_framework::base::Error::from_code(s).to_string()),
+        }
+    }
+
+    pub fn exists(account: &str) -> Result<bool, String> {
+        // Attribute-only lookup — does not pull the secret payload, so it
+        // doesn't trigger the "always allow" ACL prompt for the data blob.
+        let mut attrs = ident_pairs(account);
+        attrs.push((
+            unsafe { CFString::wrap_under_get_rule(kSecMatchLimit) },
+            CFNumber::from(1i32).into_CFType(),
+        ));
+        let query = CFDictionary::from_CFType_pairs(&attrs);
+        let mut result: core_foundation_sys::base::CFTypeRef = std::ptr::null();
+        let status = unsafe { SecItemCopyMatching(query.as_concrete_TypeRef(), &mut result) };
+        if !result.is_null() {
+            unsafe { core_foundation_sys::base::CFRelease(result) };
+        }
+        match status {
+            s if s == errSecSuccess => Ok(true),
+            s if s == errSecItemNotFound => Ok(false),
+            s => Err(security_framework::base::Error::from_code(s).to_string()),
+        }
+    }
+
+    pub fn delete(account: &str) -> Result<(), String> {
+        let query = CFDictionary::from_CFType_pairs(&ident_pairs(account));
+        let status = unsafe { SecItemDelete(query.as_concrete_TypeRef()) };
+        if status == errSecSuccess || status == errSecItemNotFound {
+            Ok(())
+        } else {
+            Err(security_framework::base::Error::from_code(status).to_string())
+        }
+    }
+}
+
+fn keychain_save(key: &str, value: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_keychain::save(key, value)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, key).map_err(|e| e.to_string())?;
+        entry.set_password(value).map_err(|e| e.to_string())
+    }
+}
+
+fn keychain_read(key: &str) -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_keychain::read(key)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, key).map_err(|e| e.to_string())?;
+        match entry.get_password() {
+            Ok(v) => Ok(Some(v)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+fn keychain_delete(key: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_keychain::delete(key)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, key).map_err(|e| e.to_string())?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+fn keychain_exists(key: &str) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_keychain::exists(key)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(keychain_read(key)?.is_some())
+    }
+}
+
+fn get_cached_or_keychain_secret(
+    key: &str,
+    cache: &tauri::State<'_, TokenCache>,
+) -> Result<Option<String>, String> {
+    if let Some(v) = cache.cache.lock().unwrap().get(key) {
+        return Ok(Some((**v).clone()));
+    }
+
+    match keychain_read(key)? {
+        Some(pw) => {
+            cache
+                .cache
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), zeroize::Zeroizing::new(pw.clone()));
+            Ok(Some(pw))
+        }
+        None => Ok(None),
+    }
+}
 
 #[tauri::command]
 pub fn save_secret(
@@ -3914,61 +4170,31 @@ pub fn save_secret(
     value: String,
     cache: tauri::State<'_, TokenCache>,
 ) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
-    entry.set_password(&value).map_err(|e| e.to_string())?;
-    // Update in-memory cache immediately
-    cache.cache.lock().unwrap().insert(key, value);
+    let key = allowed_secret_key(&key)?;
+    keychain_save(key, &value)?;
+    cache
+        .cache
+        .lock()
+        .unwrap()
+        .insert(key.to_string(), zeroize::Zeroizing::new(value));
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_secret(
-    key: String,
-    cache: tauri::State<'_, TokenCache>,
-) -> Result<Option<String>, String> {
-    // Check in-memory cache first to avoid repeated keychain prompts
-    if let Some(v) = cache.cache.lock().unwrap().get(&key).cloned() {
-        return Ok(Some(v));
-    }
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
-    match entry.get_password() {
-        Ok(pw) => {
-            cache.cache.lock().unwrap().insert(key, pw.clone());
-            Ok(Some(pw))
-        }
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-#[tauri::command]
 pub fn delete_secret(key: String, cache: tauri::State<'_, TokenCache>) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()), // already gone
-        Err(e) => Err(e.to_string()),
-    }?;
-    // Evict from cache
-    cache.cache.lock().unwrap().remove(&key);
+    let key = allowed_secret_key(&key)?;
+    keychain_delete(key)?;
+    cache.cache.lock().unwrap().remove(key);
     Ok(())
 }
 
 #[tauri::command]
 pub fn has_secret(key: String, cache: tauri::State<'_, TokenCache>) -> Result<bool, String> {
-    // Check in-memory cache first to avoid repeated keychain prompts
-    if cache.cache.lock().unwrap().contains_key(&key) {
+    let key = allowed_secret_key(&key)?;
+    if cache.cache.lock().unwrap().contains_key(key) {
         return Ok(true);
     }
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).map_err(|e| e.to_string())?;
-    match entry.get_password() {
-        Ok(pw) => {
-            cache.cache.lock().unwrap().insert(key, pw);
-            Ok(true)
-        }
-        Err(keyring::Error::NoEntry) => Ok(false),
-        Err(e) => Err(e.to_string()),
-    }
+    keychain_exists(key)
 }
 
 // ---------------------------------------------------------------------------
@@ -3986,28 +4212,15 @@ pub fn update_github_repo_url(
         owner_repo, homepage
     );
 
-    // Try in-memory cache first to avoid repeated keychain prompts
-    let token = {
-        let mut map = cache.cache.lock().unwrap();
-        if let Some(t) = map.get("github_token").cloned() {
-            println!("[update_github_repo_url] ✓ token from memory cache");
+    // Reads via cache; falls through to Keychain on miss.
+    let token = match get_cached_or_keychain_secret("github_token", &cache)? {
+        Some(t) => {
+            println!("[update_github_repo_url] ✓ token resolved");
             t
-        } else {
-            // Not cached yet — read from keychain (may prompt once)
-            let entry =
-                keyring::Entry::new(KEYRING_SERVICE, "github_token").map_err(|e| e.to_string())?;
-            match entry.get_password() {
-                Ok(t) => {
-                    println!("[update_github_repo_url] ✓ token loaded from keychain (now cached)");
-                    map.insert("github_token".into(), t.clone());
-                    t
-                }
-                Err(keyring::Error::NoEntry) => {
-                    println!("[update_github_repo_url] ✗ no token in keychain");
-                    return Err("No GitHub token configured. Add one in Settings.".into());
-                }
-                Err(e) => return Err(e.to_string()),
-            }
+        }
+        None => {
+            println!("[update_github_repo_url] ✗ no token in keychain");
+            return Err("No GitHub token configured. Add one in Settings.".into());
         }
     };
 
@@ -4046,46 +4259,31 @@ pub fn update_github_repo_url(
 #[tauri::command]
 pub async fn llm_request(
     provider: String,
-    url: String,
     body: String,
-    extra_headers: Option<std::collections::HashMap<String, String>>,
     cache: tauri::State<'_, TokenCache>,
 ) -> Result<String, String> {
-    // Map provider to its keychain secret name
-    let secret_key = match provider.as_str() {
-        "anthropic" => "anthropic_api_key",
-        "openai" => "openai_api_key",
-        "cerebras" => "cerebras_api_key",
+    // Map provider to its keychain secret name and fixed upstream endpoint.
+    let (secret_key, url) = match provider.as_str() {
+        "anthropic" => ("anthropic_api_key", "https://api.anthropic.com/v1/messages"),
+        "openai" => (
+            "openai_api_key",
+            "https://api.openai.com/v1/chat/completions",
+        ),
+        "cerebras" => (
+            "cerebras_api_key",
+            "https://api.cerebras.ai/v1/chat/completions",
+        ),
         other => return Err(format!("Unknown provider: {other}")),
     };
 
     // Retrieve API key from in-memory cache or keychain
-    let api_key = {
-        let mut map = cache.cache.lock().unwrap();
-        if let Some(k) = map.get(secret_key).cloned() {
-            k
-        } else {
-            let entry =
-                keyring::Entry::new(KEYRING_SERVICE, secret_key).map_err(|e| e.to_string())?;
-            match entry.get_password() {
-                Ok(k) => {
-                    map.insert(secret_key.to_string(), k.clone());
-                    k
-                }
-                Err(keyring::Error::NoEntry) => {
-                    return Err(format!(
-                        "No API key configured for {provider}. Add one in Settings."
-                    ));
-                }
-                Err(e) => return Err(e.to_string()),
-            }
-        }
-    };
+    let api_key = get_cached_or_keychain_secret(secret_key, &cache)?
+        .ok_or_else(|| format!("No API key configured for {provider}. Add one in Settings."))?;
 
     // Build the request
     let client = reqwest::Client::new();
     let mut req = client
-        .post(&url)
+        .post(url)
         .header("Content-Type", "application/json")
         .body(body);
 
@@ -4100,13 +4298,6 @@ pub async fn llm_request(
             req = req.header("Authorization", format!("Bearer {}", api_key));
         }
         _ => {} // unreachable due to earlier match
-    }
-
-    // Add any extra headers from the caller
-    if let Some(headers) = extra_headers {
-        for (k, v) in headers {
-            req = req.header(&k, &v);
-        }
     }
 
     // Execute the request
@@ -4318,41 +4509,13 @@ pub fn refresh_actions_status(
 ) -> Result<Vec<ActionsStat>, String> {
     let conn = open_db(&state)?;
 
-    // Load GitHub token from cache / keychain (soft failure — works without it for public repos)
-    let github_token: Option<String> = {
-        let mut map = cache.cache.lock().unwrap();
-        if let Some(t) = map.get("github_token").cloned() {
-            Some(t)
-        } else if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "github_token") {
-            match entry.get_password() {
-                Ok(t) => {
-                    map.insert("github_token".into(), t.clone());
-                    Some(t)
-                }
-                _ => None,
-            }
-        } else {
-            None
-        }
-    };
-
-    // Load Gitea token similarly (optional)
-    let gitea_token: Option<String> = {
-        let mut map = cache.cache.lock().unwrap();
-        if let Some(t) = map.get("gitea_token").cloned() {
-            Some(t)
-        } else if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, "gitea_token") {
-            match entry.get_password() {
-                Ok(t) => {
-                    map.insert("gitea_token".into(), t.clone());
-                    Some(t)
-                }
-                _ => None,
-            }
-        } else {
-            None
-        }
-    };
+    // Load GitHub / Gitea tokens. Soft failure — works without them for public repos.
+    let github_token: Option<String> = get_cached_or_keychain_secret("github_token", &cache)
+        .ok()
+        .flatten();
+    let gitea_token: Option<String> = get_cached_or_keychain_secret("gitea_token", &cache)
+        .ok()
+        .flatten();
 
     // Fetch projects that have a supported host and owner_repo
     let mut stmt = conn

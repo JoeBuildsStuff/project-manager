@@ -178,7 +178,6 @@ pub fn run() {
             delete_notes_comment,
             sync_notes_comment_anchors,
             save_secret,
-            get_secret,
             delete_secret,
             has_secret,
             update_github_repo_url,

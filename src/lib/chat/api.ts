@@ -101,15 +101,11 @@ function formatFileSize(bytes: number): string {
  */
 async function llmRequest(
   provider: string,
-  url: string,
-  body: Record<string, unknown>,
-  extraHeaders?: Record<string, string>
+  body: Record<string, unknown>
 ): Promise<string> {
   return invoke<string>("llm_request", {
     provider,
-    url,
     body: JSON.stringify(body),
-    extraHeaders: extraHeaders || null,
   });
 }
 
@@ -185,7 +181,7 @@ Web Search Capabilities:
   const allToolCalls: ChatAPIResponse["toolCalls"] = [];
 
   while (iteration < maxIterations) {
-    const rawResp = await llmRequest("anthropic", "https://api.anthropic.com/v1/messages", {
+    const rawResp = await llmRequest("anthropic", {
       model: body.model || "claude-sonnet-4-6",
       max_tokens: 2048,
       system: systemPrompt,
@@ -285,7 +281,6 @@ Web Search Capabilities:
 async function callCerebras(body: ChatRequestBody): Promise<ChatAPIResponse> {
   const rawResp = await llmRequest(
     "cerebras",
-    "https://api.cerebras.ai/v1/chat/completions",
     {
       model: body.model || "llama-4-scout-17b-16e-instruct",
       messages: [
@@ -318,7 +313,6 @@ async function callOpenAI(body: ChatRequestBody): Promise<ChatAPIResponse> {
 
   const rawResp = await llmRequest(
     "openai",
-    "https://api.openai.com/v1/chat/completions",
     {
       model: openaiModel,
       messages: [
