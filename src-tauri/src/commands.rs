@@ -2061,7 +2061,7 @@ pub fn open_in_finder(
 }
 
 #[tauri::command]
-pub fn open_in_vscode(
+pub fn open_in_cursor(
     folder_key: String,
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
@@ -2074,6 +2074,71 @@ pub fn open_in_vscode(
     Command::new("open")
         .args(["-a", "Cursor"])
         .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_in_vscode(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path = workspace_path(&state, &folder_key)?;
+    let code_result = Command::new("code").arg(&path).spawn();
+    if code_result.is_ok() {
+        return Ok(());
+    }
+
+    Command::new("open")
+        .args(["-a", "Visual Studio Code"])
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_in_warp(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path = workspace_path(&state, &folder_key)?;
+    Command::new("open")
+        .args(["-a", "Warp"])
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_in_terminal(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let path = workspace_path(&state, &folder_key)?;
+    Command::new("open")
+        .args(["-a", "Terminal"])
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn launch_claude_desktop() -> Result<(), String> {
+    Command::new("open")
+        .args(["-a", "Claude"])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn launch_codex_desktop() -> Result<(), String> {
+    Command::new("open")
+        .args(["-a", "Codex"])
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())

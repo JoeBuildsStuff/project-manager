@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  FolderOpen,
-  Code2,
   ExternalLink,
   GitBranch,
   GitCommit,
@@ -14,8 +12,16 @@ import {
   ChevronDown,
   AlertCircle,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { ButtonGroup } from "@/components/ui/button-group";
 import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Popover,
   PopoverContent,
@@ -34,6 +40,7 @@ import { CategoryBadge, HostBadge, StatusBadge, StageBadge, DeployBadge } from "
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import type { Project } from "../types";
 import ProjectActivityHeatmap, { normalizeGitActivity, type GitActivity } from "./ProjectActivityHeatmap";
+import { cn } from "@/lib/utils";
 
 interface GitStatus {
   folder_key: string;
@@ -144,12 +151,14 @@ export function ProjectDetailContent({
 
   const quickActions = (
     <div className="flex flex-wrap gap-1.5">
-      <ActionButton icon={<FolderOpen className="h-3.5 w-3.5" />} onClick={() => openWith("open_in_finder", p.folder_key)}>
-        Finder
-      </ActionButton>
-      <ActionButton icon={<Code2 className="h-3.5 w-3.5" />} onClick={() => openWith("open_in_vscode", p.folder_key)}>
-        Cursor
-      </ActionButton>
+      <OpenEditorButtonGroup
+        onOpenCursor={() => openWith("open_in_cursor", p.folder_key)}
+        onOpenFinder={() => openWith("open_in_finder", p.folder_key)}
+        onOpenWarp={() => openWith("open_in_warp", p.folder_key)}
+        onOpenTerminal={() => openWith("open_in_terminal", p.folder_key)}
+        onLaunchClaude={() => invoke("launch_claude_desktop")}
+        onLaunchCodex={() => invoke("launch_codex_desktop")}
+      />
       {p.production_url && (
         <ActionButton icon={<ExternalLink className="h-3.5 w-3.5" />} onClick={() => openWith("open_url", p.production_url as string)}>
           Live site
@@ -662,5 +671,64 @@ export function ActionButton({
       {icon}
       {children}
     </Button>
+  );
+}
+
+function OpenEditorButtonGroup({
+  onOpenCursor,
+  onOpenFinder,
+  onOpenWarp,
+  onOpenTerminal,
+  onLaunchClaude,
+  onLaunchCodex,
+}: {
+  onOpenCursor: () => void;
+  onOpenFinder: () => void;
+  onOpenWarp: () => void;
+  onOpenTerminal: () => void;
+  onLaunchClaude: () => void;
+  onLaunchCodex: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <ButtonGroup>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1.5 rounded-l-[min(var(--radius-md),12px)]! rounded-r-none! text-xs"
+          onClick={onOpenCursor}
+        >
+          Cursor
+        </Button>
+        <DropdownMenuTrigger
+          className={cn(
+            buttonVariants({ variant: "outline", size: "sm" }),
+            "h-7 rounded-l-none! rounded-r-[min(var(--radius-md),12px)]! px-2"
+          )}
+          aria-label="Choose editor"
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+        </DropdownMenuTrigger>
+      </ButtonGroup>
+      <DropdownMenuContent align="end" className="w-28">
+        <DropdownMenuGroup>
+          <DropdownMenuItem onClick={onOpenFinder}>
+            Finder
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onOpenWarp}>
+            Warp
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onOpenTerminal}>
+            Terminal
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onLaunchCodex}>
+            Codex
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onLaunchClaude}>
+            Claude
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
