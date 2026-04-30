@@ -1,7 +1,12 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::commands::{
+    append_terminal_event_to_db, finish_agent_run_in_db, mark_agent_run_running_in_db,
+    workspace_db_path, WorkspaceState,
+};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -10,6 +15,9 @@ pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
+    agent_run_id: Arc<Mutex<Option<String>>>,
+    next_seq: Arc<Mutex<i64>>,
+    db_path: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -47,10 +55,12 @@ fn exit_event(id: &str) -> String {
 pub fn pty_start(
     app: AppHandle,
     state: State<'_, PtyState>,
+    workspace_state: State<'_, WorkspaceState>,
     id: String,
     cwd: Option<String>,
     cols: u16,
     rows: u16,
+    agent_run_id: Option<String>,
 ) -> Result<(), String> {
     {
         let map = state.sessions.lock().map_err(|e| e.to_string())?;
@@ -87,10 +97,17 @@ pub fn pty_start(
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
+    let agent_run_id = Arc::new(Mutex::new(agent_run_id));
+    let next_seq = Arc::new(Mutex::new(0));
+    let db_path = workspace_db_path(&workspace_state).ok();
+
     let session = PtySession {
         master: pair.master,
         writer,
         child,
+        agent_run_id: agent_run_id.clone(),
+        next_seq: next_seq.clone(),
+        db_path: db_path.clone(),
     };
 
     {
@@ -101,6 +118,9 @@ pub fn pty_start(
     // Reader thread — stream output bytes as base64-ish utf8 lossy string
     let app_reader = app.clone();
     let id_reader = id.clone();
+    let run_reader = agent_run_id.clone();
+    let seq_reader = next_seq.clone();
+    let db_reader = db_path.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -108,6 +128,21 @@ pub fn pty_start(
                 Ok(0) => break,
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if let (Some(db_path), Ok(run_guard)) = (db_reader.as_ref(), run_reader.lock())
+                    {
+                        if let Some(run_id) = run_guard.as_deref() {
+                            if let Ok(mut seq) = seq_reader.lock() {
+                                let _ = append_terminal_event_to_db(
+                                    db_path,
+                                    run_id,
+                                    *seq,
+                                    "output",
+                                    Some(&chunk),
+                                );
+                                *seq += 1;
+                            }
+                        }
+                    }
                     let _ = app_reader.emit(
                         &output_event(&id_reader),
                         PtyOutput {
@@ -142,8 +177,23 @@ pub fn pty_start(
                 None => return,
             };
             if let Some(code) = finished {
+                let run_context = map.get(&id_wait).and_then(|s| {
+                    let run_id = s.agent_run_id.lock().ok().and_then(|g| g.clone());
+                    let seq = s.next_seq.lock().ok().map(|mut guard| {
+                        let current = *guard;
+                        *guard += 1;
+                        current
+                    });
+                    run_id.map(|run_id| (s.db_path.clone(), run_id, seq))
+                });
                 map.remove(&id_wait);
                 drop(map);
+                if let Some((Some(db_path), run_id, Some(seq))) = run_context {
+                    let text = format!("process exited with code {code}");
+                    let _ =
+                        append_terminal_event_to_db(&db_path, &run_id, seq, "exit", Some(&text));
+                    let _ = finish_agent_run_in_db(&db_path, &run_id, Some(code));
+                }
                 let _ = app_wait.emit(
                     &exit_event(&id_wait),
                     PtyExit {
@@ -160,11 +210,48 @@ pub fn pty_start(
 }
 
 #[tauri::command]
+pub fn pty_set_agent_run(
+    state: State<'_, PtyState>,
+    id: String,
+    agent_run_id: Option<String>,
+) -> Result<(), String> {
+    let map = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = map
+        .get(&id)
+        .ok_or_else(|| "pty session not found".to_string())?;
+    if let (Some(db_path), Some(run_id)) = (session.db_path.as_ref(), agent_run_id.as_deref()) {
+        let _ = mark_agent_run_running_in_db(db_path, run_id);
+        if let Ok(mut seq) = session.next_seq.lock() {
+            let _ = append_terminal_event_to_db(
+                db_path,
+                run_id,
+                *seq,
+                "system",
+                Some("agent run attached to terminal"),
+            );
+            *seq += 1;
+        }
+    }
+    let mut run_guard = session.agent_run_id.lock().map_err(|e| e.to_string())?;
+    *run_guard = agent_run_id;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn pty_write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), String> {
     let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = map
         .get_mut(&id)
         .ok_or_else(|| "pty session not found".to_string())?;
+    if let (Some(db_path), Ok(run_guard)) = (session.db_path.as_ref(), session.agent_run_id.lock())
+    {
+        if let Some(run_id) = run_guard.as_deref() {
+            if let Ok(mut seq) = session.next_seq.lock() {
+                let _ = append_terminal_event_to_db(db_path, run_id, *seq, "input", Some(&data));
+                *seq += 1;
+            }
+        }
+    }
     session
         .writer
         .write_all(data.as_bytes())

@@ -3,7 +3,7 @@ mod config;
 mod pty;
 
 use commands::*;
-use pty::{pty_kill, pty_resize, pty_start, pty_write, PtyState};
+use pty::{pty_kill, pty_resize, pty_set_agent_run, pty_start, pty_write, PtyState};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -164,6 +164,10 @@ pub fn run() {
             update_llm_agent,
             delete_llm_agent,
             get_task_assignment_options,
+            create_agent_run,
+            get_agent_runs_for_task,
+            get_terminal_events,
+            refresh_agent_run_codex_link,
             list_notes_documents,
             get_notes_document_by_id,
             create_notes_document,
@@ -194,6 +198,7 @@ pub fn run() {
             delete_table_view,
             execute_terminal_command,
             pty_start,
+            pty_set_agent_run,
             pty_write,
             pty_resize,
             pty_kill,

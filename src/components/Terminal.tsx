@@ -13,7 +13,9 @@ interface TerminalProps {
   commandRequest?: {
     nonce: number;
     command: string;
+    agentRunId?: string | null;
   } | null;
+  onProcessExit?: () => void;
 }
 
 export default function Terminal({
@@ -21,6 +23,7 @@ export default function Terminal({
   hideHeader,
   sessionId,
   commandRequest,
+  onProcessExit,
 }: TerminalProps = {}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -30,10 +33,14 @@ export default function Terminal({
   );
   const readyRef = useRef(false);
   const pendingCommandRef = useRef<string | null>(null);
+  const pendingAgentRunIdRef = useRef<string | null>(null);
   const lastCommandNonceRef = useRef<number | null>(null);
+  const onProcessExitRef = useRef(onProcessExit);
+  onProcessExitRef.current = onProcessExit;
 
-  const sendCommandToPty = async (command: string) => {
+  const sendCommandToPty = async (command: string, agentRunId?: string | null) => {
     const id = idRef.current;
+    await invoke("pty_set_agent_run", { id, agentRunId: agentRunId ?? null });
     await invoke("pty_write", { id, data: `${command}\r` });
   };
 
@@ -80,6 +87,7 @@ export default function Terminal({
           term.write(`\r\n\x1b[90m[process exited${
             e.payload.code != null ? ` with code ${e.payload.code}` : ""
           }]\x1b[0m\r\n`);
+          onProcessExitRef.current?.();
         }
       );
 
@@ -92,12 +100,15 @@ export default function Terminal({
           cwd: workingDirectory ?? null,
           cols,
           rows,
+          agentRunId: null,
         });
         readyRef.current = true;
         if (pendingCommandRef.current) {
           const command = pendingCommandRef.current;
+          const agentRunId = pendingAgentRunIdRef.current;
           pendingCommandRef.current = null;
-          await sendCommandToPty(command);
+          pendingAgentRunIdRef.current = null;
+          await sendCommandToPty(command, agentRunId);
         }
       } catch (err) {
         term.write(`\x1b[31mfailed to start pty: ${String(err)}\x1b[0m\r\n`);
@@ -127,6 +138,7 @@ export default function Terminal({
       disposed = true;
       readyRef.current = false;
       pendingCommandRef.current = null;
+      pendingAgentRunIdRef.current = null;
       unlistenOutput?.();
       unlistenExit?.();
       disposeData.dispose();
@@ -152,11 +164,12 @@ export default function Terminal({
     lastCommandNonceRef.current = commandRequest.nonce;
 
     if (readyRef.current) {
-      sendCommandToPty(commandRequest.command).catch(() => {});
+      sendCommandToPty(commandRequest.command, commandRequest.agentRunId).catch(() => {});
       return;
     }
 
     pendingCommandRef.current = commandRequest.command;
+    pendingAgentRunIdRef.current = commandRequest.agentRunId ?? null;
   }, [commandRequest]);
 
   return (

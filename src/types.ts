@@ -46,6 +46,41 @@ export interface Task {
   completed_at: string | null;
 }
 
+export interface AgentRun {
+  id: string;
+  task_id: number | null;
+  folder_key: string | null;
+  agent_id: number | null;
+  provider: string;
+  prompt: string | null;
+  command: string;
+  cwd: string;
+  terminal_session_id: string | null;
+  status: string;
+  pid: number | null;
+  exit_code: number | null;
+  started_at: number;
+  finished_at: number | null;
+  last_error: string | null;
+  external_thread_id: string | null;
+  external_rollout_path: string | null;
+  external_state_db_path: string | null;
+  external_title: string | null;
+  external_model: string | null;
+  external_model_provider: string | null;
+  external_tokens_used: number | null;
+  external_updated_at: number | null;
+}
+
+export interface TerminalEvent {
+  id: number;
+  run_id: string;
+  seq: number;
+  ts: number;
+  direction: "input" | "output" | "exit" | "system" | string;
+  data: string | null;
+}
+
 export interface LlmAgent {
   id: number;
   name: string;

@@ -1,5 +1,5 @@
 use crate::config::{self, AppConfig};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -122,6 +122,121 @@ fn workspace(state: &WorkspaceState) -> Result<PathBuf, String> {
 
 fn db_path(state: &WorkspaceState) -> Result<PathBuf, String> {
     Ok(workspace(state)?.join("project-metadata.sqlite"))
+}
+
+pub(crate) fn workspace_db_path(state: &WorkspaceState) -> Result<PathBuf, String> {
+    db_path(state)
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn new_run_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("run-{}-{nanos}", std::process::id())
+}
+
+fn ensure_agent_history_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agent_runs (
+            id                    TEXT PRIMARY KEY,
+            task_id               INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+            folder_key            TEXT REFERENCES project_metadata(folder_key) ON DELETE SET NULL,
+            agent_id              INTEGER REFERENCES llm_agents(id) ON DELETE SET NULL,
+            provider              TEXT NOT NULL,
+            prompt                TEXT,
+            command               TEXT NOT NULL,
+            cwd                   TEXT NOT NULL,
+            terminal_session_id   TEXT,
+            status                TEXT NOT NULL DEFAULT 'starting',
+            pid                   INTEGER,
+            exit_code             INTEGER,
+            started_at            INTEGER NOT NULL,
+            finished_at           INTEGER,
+            last_error            TEXT,
+            external_thread_id    TEXT,
+            external_rollout_path TEXT,
+            external_state_db_path TEXT,
+            external_title        TEXT,
+            external_model        TEXT,
+            external_model_provider TEXT,
+            external_tokens_used  INTEGER,
+            external_updated_at   INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS terminal_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id      TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            seq         INTEGER NOT NULL,
+            ts          INTEGER NOT NULL,
+            direction   TEXT NOT NULL,
+            data        TEXT,
+            UNIQUE(run_id, seq)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_task_started
+            ON agent_runs(task_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_folder_started
+            ON agent_runs(folder_key, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_external_thread
+            ON agent_runs(provider, external_thread_id);
+        CREATE INDEX IF NOT EXISTS idx_terminal_events_run_seq
+            ON terminal_events(run_id, seq);",
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub(crate) fn append_terminal_event_to_db(
+    db_path: &Path,
+    run_id: &str,
+    seq: i64,
+    direction: &str,
+    data: Option<&str>,
+) -> Result<(), String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let _ = conn.execute("PRAGMA foreign_keys = ON", []);
+    conn.execute(
+        "INSERT OR IGNORE INTO terminal_events (run_id, seq, ts, direction, data)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![run_id, seq, now_ms(), direction, data],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn finish_agent_run_in_db(
+    db_path: &Path,
+    run_id: &str,
+    exit_code: Option<i32>,
+) -> Result<(), String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE agent_runs
+         SET status = 'exited', exit_code = ?1, finished_at = ?2
+         WHERE id = ?3",
+        rusqlite::params![exit_code, now_ms(), run_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn mark_agent_run_running_in_db(db_path: &Path, run_id: &str) -> Result<(), String> {
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE agent_runs
+         SET status = CASE WHEN status = 'starting' THEN 'running' ELSE status END
+         WHERE id = ?1",
+        [run_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
@@ -263,6 +378,7 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
     );
 
     let _ = conn.execute("PRAGMA journal_mode=WAL", []);
+    ensure_agent_history_schema(&conn)?;
 
     Ok(conn)
 }
@@ -456,6 +572,7 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
         "ALTER TABLE table_views ADD COLUMN context TEXT NOT NULL DEFAULT 'projects'",
         [],
     );
+    ensure_agent_history_schema(&conn)?;
 
     Ok(())
 }
@@ -2576,11 +2693,14 @@ fn create_gitea_repo(name: &str, private: bool, token: &str) -> Result<String, S
     let user_status = user_resp.status();
     let user_body = user_resp.text().unwrap_or_default();
     if !user_status.is_success() {
-        return Err(format!("Gitea user lookup failed {}: {}", user_status, user_body));
+        return Err(format!(
+            "Gitea user lookup failed {}: {}",
+            user_status, user_body
+        ));
     }
 
-    let user_value: serde_json::Value =
-        serde_json::from_str(&user_body).map_err(|e| format!("Invalid Gitea user response: {e}"))?;
+    let user_value: serde_json::Value = serde_json::from_str(&user_body)
+        .map_err(|e| format!("Invalid Gitea user response: {e}"))?;
     let _owner = user_value
         .get("login")
         .and_then(|v| v.as_str())
@@ -2740,8 +2860,16 @@ pub fn create_project_from_onboarding(
             .map_err(|e| format!("Write .gitignore failed: {e}"))?;
             steps.push("Added README.md and .gitignore".into());
 
-            run_git(&folder_path, &["init", "-b", "main"], "Initialize git repository")?;
-            run_git(&folder_path, &["add", "README.md", ".gitignore"], "Stage starter files")?;
+            run_git(
+                &folder_path,
+                &["init", "-b", "main"],
+                "Initialize git repository",
+            )?;
+            run_git(
+                &folder_path,
+                &["add", "README.md", ".gitignore"],
+                "Stage starter files",
+            )?;
             run_git(
                 &folder_path,
                 &[
@@ -2760,11 +2888,16 @@ pub fn create_project_from_onboarding(
             match request.remote.as_deref().unwrap_or("none") {
                 "none" => {}
                 "github_public" | "github_private" => {
-                    let token = get_cached_or_keychain_secret("github_token", &cache)?
-                        .ok_or_else(|| "No GitHub token configured. Add one in Settings.".to_string())?;
+                    let token = get_cached_or_keychain_secret("github_token", &cache)?.ok_or_else(
+                        || "No GitHub token configured. Add one in Settings.".to_string(),
+                    )?;
                     let private = request.remote.as_deref() == Some("github_private");
                     let remote_url = create_github_repo(&request.folder_name, private, &token)?;
-                    run_git(&folder_path, &["remote", "add", "origin", &remote_url], "Add GitHub remote")?;
+                    run_git(
+                        &folder_path,
+                        &["remote", "add", "origin", &remote_url],
+                        "Add GitHub remote",
+                    )?;
                     push_with_token(&folder_path, "github", &token)?;
                     steps.push(format!(
                         "Created {} GitHub repository",
@@ -2772,11 +2905,17 @@ pub fn create_project_from_onboarding(
                     ));
                 }
                 "gitea_private" | "gitea_public" => {
-                    let token = get_cached_or_keychain_secret("gitea_token", &cache)?
-                        .ok_or_else(|| "No Gitea token configured. Add one in Settings.".to_string())?;
+                    let token =
+                        get_cached_or_keychain_secret("gitea_token", &cache)?.ok_or_else(|| {
+                            "No Gitea token configured. Add one in Settings.".to_string()
+                        })?;
                     let private = request.remote.as_deref() != Some("gitea_public");
                     let remote_url = create_gitea_repo(&request.folder_name, private, &token)?;
-                    run_git(&folder_path, &["remote", "add", "origin", &remote_url], "Add Gitea remote")?;
+                    run_git(
+                        &folder_path,
+                        &["remote", "add", "origin", &remote_url],
+                        "Add Gitea remote",
+                    )?;
                     push_with_token(&folder_path, "gitea", &token)?;
                     steps.push(format!(
                         "Created {} Gitea repository",
@@ -3245,6 +3384,43 @@ pub struct Task {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AgentRun {
+    pub id: String,
+    pub task_id: Option<i64>,
+    pub folder_key: Option<String>,
+    pub agent_id: Option<i64>,
+    pub provider: String,
+    pub prompt: Option<String>,
+    pub command: String,
+    pub cwd: String,
+    pub terminal_session_id: Option<String>,
+    pub status: String,
+    pub pid: Option<i64>,
+    pub exit_code: Option<i64>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub external_thread_id: Option<String>,
+    pub external_rollout_path: Option<String>,
+    pub external_state_db_path: Option<String>,
+    pub external_title: Option<String>,
+    pub external_model: Option<String>,
+    pub external_model_provider: Option<String>,
+    pub external_tokens_used: Option<i64>,
+    pub external_updated_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TerminalEvent {
+    pub id: i64,
+    pub run_id: String,
+    pub seq: i64,
+    pub ts: i64,
+    pub direction: String,
+    pub data: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClaudeAgentConfig {
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
@@ -3298,6 +3474,234 @@ pub struct TaskCount {
     pub folder_key: String,
     pub open_count: i64,
     pub total_count: i64,
+}
+
+fn map_agent_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRun> {
+    Ok(AgentRun {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        folder_key: row.get(2)?,
+        agent_id: row.get(3)?,
+        provider: row.get(4)?,
+        prompt: row.get(5)?,
+        command: row.get(6)?,
+        cwd: row.get(7)?,
+        terminal_session_id: row.get(8)?,
+        status: row.get(9)?,
+        pid: row.get(10)?,
+        exit_code: row.get(11)?,
+        started_at: row.get(12)?,
+        finished_at: row.get(13)?,
+        last_error: row.get(14)?,
+        external_thread_id: row.get(15)?,
+        external_rollout_path: row.get(16)?,
+        external_state_db_path: row.get(17)?,
+        external_title: row.get(18)?,
+        external_model: row.get(19)?,
+        external_model_provider: row.get(20)?,
+        external_tokens_used: row.get(21)?,
+        external_updated_at: row.get(22)?,
+    })
+}
+
+fn agent_runs_select_sql() -> &'static str {
+    "SELECT id, task_id, folder_key, agent_id, provider, prompt, command, cwd, terminal_session_id,
+            status, pid, exit_code, started_at, finished_at, last_error, external_thread_id,
+            external_rollout_path, external_state_db_path, external_title, external_model,
+            external_model_provider, external_tokens_used, external_updated_at
+     FROM agent_runs"
+}
+
+fn get_agent_run_by_id(conn: &Connection, id: &str) -> Result<AgentRun, String> {
+    conn.query_row(
+        &format!("{} WHERE id = ?1", agent_runs_select_sql()),
+        [id],
+        map_agent_run_row,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_agent_run(
+    task_id: i64,
+    agent_id: Option<i64>,
+    provider: String,
+    prompt: Option<String>,
+    command: String,
+    cwd: String,
+    terminal_session_id: Option<String>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<AgentRun, String> {
+    let conn = open_db(&state)?;
+    let folder_key: String = conn
+        .query_row(
+            "SELECT folder_key FROM tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let id = new_run_id();
+    conn.execute(
+        "INSERT INTO agent_runs (
+            id, task_id, folder_key, agent_id, provider, prompt, command, cwd,
+            terminal_session_id, status, started_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'starting', ?10)",
+        rusqlite::params![
+            id,
+            task_id,
+            folder_key,
+            agent_id,
+            provider.trim().to_lowercase(),
+            prompt,
+            command,
+            cwd,
+            terminal_session_id,
+            now_ms()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    get_agent_run_by_id(&conn, &id)
+}
+
+#[tauri::command]
+pub fn get_agent_runs_for_task(
+    task_id: i64,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<AgentRun>, String> {
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare(&format!(
+            "{} WHERE task_id = ?1 ORDER BY started_at DESC, id DESC",
+            agent_runs_select_sql()
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([task_id], map_agent_run_row)
+        .map_err(|e| e.to_string())?;
+    let mut runs = Vec::new();
+    for row in rows {
+        runs.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(runs)
+}
+
+#[tauri::command]
+pub fn get_terminal_events(
+    run_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<TerminalEvent>, String> {
+    let conn = open_db(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, run_id, seq, ts, direction, data
+             FROM terminal_events
+             WHERE run_id = ?1
+             ORDER BY seq ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([run_id], |row| {
+            Ok(TerminalEvent {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                seq: row.get(2)?,
+                ts: row.get(3)?,
+                direction: row.get(4)?,
+                data: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(events)
+}
+
+fn codex_state_db_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".codex").join("state_5.sqlite"))
+}
+
+#[tauri::command]
+pub fn refresh_agent_run_codex_link(
+    run_id: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<AgentRun, String> {
+    let conn = open_db(&state)?;
+    let run = get_agent_run_by_id(&conn, &run_id)?;
+    if run.provider != "codex" {
+        return Ok(run);
+    }
+
+    let Some(state_db_path) = codex_state_db_path() else {
+        return Ok(run);
+    };
+    if !state_db_path.exists() {
+        return Ok(run);
+    }
+
+    let codex_conn = Connection::open_with_flags(
+        &state_db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("Failed to open Codex state DB: {e}"))?;
+
+    let matched = codex_conn
+        .query_row(
+            "SELECT id, rollout_path, title, model, model_provider, tokens_used, updated_at_ms
+             FROM threads
+             WHERE cwd = ?1
+               AND COALESCE(created_at_ms, created_at * 1000) >= ?2
+               AND model_provider = 'openai'
+             ORDER BY COALESCE(created_at_ms, created_at * 1000) DESC, id DESC
+             LIMIT 1",
+            rusqlite::params![run.cwd, run.started_at],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    if let Some((thread_id, rollout_path, title, model, model_provider, tokens_used, updated_at)) =
+        matched
+    {
+        conn.execute(
+            "UPDATE agent_runs
+             SET external_thread_id = ?1,
+                 external_rollout_path = ?2,
+                 external_state_db_path = ?3,
+                 external_title = ?4,
+                 external_model = ?5,
+                 external_model_provider = ?6,
+                 external_tokens_used = ?7,
+                 external_updated_at = ?8
+             WHERE id = ?9",
+            rusqlite::params![
+                thread_id,
+                rollout_path,
+                state_db_path.to_string_lossy().to_string(),
+                title,
+                model,
+                model_provider,
+                tokens_used,
+                updated_at,
+                run_id
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    get_agent_run_by_id(&conn, &run.id)
 }
 
 #[tauri::command]
@@ -4329,10 +4733,7 @@ const KEYRING_SERVICE: &str = "com.joebuilds.project-manager";
 
 fn allowed_secret_key(key: &str) -> Result<&str, String> {
     match key {
-        "github_token"
-        | "gitea_token"
-        | "anthropic_api_key"
-        | "openai_api_key"
+        "github_token" | "gitea_token" | "anthropic_api_key" | "openai_api_key"
         | "cerebras_api_key" => Ok(key),
         _ => Err("Unsupported secret key".into()),
     }

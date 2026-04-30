@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, ChevronDown, Loader2, Play, Trash } from "lucide-react";
+import { ArrowLeft, ChevronDown, Loader2, Play, RefreshCw, Trash } from "lucide-react";
 import { toast } from "sonner";
 import Terminal from "./Terminal";
 import { Button } from "@/components/ui/button";
@@ -29,7 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import type { Project, Task, TaskAssignmentOptions } from "@/types";
+import type { AgentRun, Project, Task, TaskAssignmentOptions, TerminalEvent } from "@/types";
 import { TaskKindBadge, TaskPriorityBadge, TaskStatusBadge } from "./task-badges";
 import { TaskAssigneeBadge } from "./task-assignee";
 import { buildAgentLaunchCommand, buildTaskAgentPrompt } from "@/lib/agent-launch";
@@ -53,6 +53,25 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
       {children}
     </div>
   );
+}
+
+function formatRunTime(value: number | null | undefined) {
+  if (!value) return "";
+  return new Date(value).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function replayText(events: TerminalEvent[]) {
+  return events
+    .filter((event) =>
+      event.direction === "input" || event.direction === "output" || event.direction === "exit"
+    )
+    .map((event) => event.data ?? "")
+    .join("");
 }
 
 /** Same interaction pattern as `EditableField` in `ProjectDetailContent`. */
@@ -129,7 +148,16 @@ export default function TaskFullPage({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
-  const [commandRequest, setCommandRequest] = useState<{ nonce: number; command: string } | null>(null);
+  const [commandRequest, setCommandRequest] = useState<{
+    nonce: number;
+    command: string;
+    agentRunId?: string | null;
+  } | null>(null);
+  const [agentRuns, setAgentRuns] = useState<AgentRun[]>([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [terminalEvents, setTerminalEvents] = useState<TerminalEvent[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
 
   const stateRef = useRef({
     title,
@@ -192,6 +220,42 @@ export default function TaskFullPage({
       });
   }, []);
 
+  const loadAgentRuns = useCallback(async () => {
+    setRunsLoading(true);
+    try {
+      const runs = await invoke<AgentRun[]>("get_agent_runs_for_task", { taskId: task.id });
+      setAgentRuns(runs);
+      setSelectedRunId((current) => current ?? runs[0]?.id ?? null);
+    } catch (err) {
+      toast.error("Unable to load agent runs", { description: String(err) });
+    } finally {
+      setRunsLoading(false);
+    }
+  }, [task.id]);
+
+  const refreshRunCodexLink = useCallback(async (runId: string) => {
+    try {
+      await invoke<AgentRun>("refresh_agent_run_codex_link", { runId });
+      await loadAgentRuns();
+    } catch {
+      await loadAgentRuns();
+    }
+  }, [loadAgentRuns]);
+
+  useEffect(() => {
+    void loadAgentRuns();
+  }, [loadAgentRuns]);
+
+  useEffect(() => {
+    if (!selectedRunId) {
+      setTerminalEvents([]);
+      return;
+    }
+    invoke<TerminalEvent[]>("get_terminal_events", { runId: selectedRunId })
+      .then(setTerminalEvents)
+      .catch(() => setTerminalEvents([]));
+  }, [selectedRunId, agentRuns]);
+
   useEffect(() => {
     setTitle(task.title);
     setDescription(task.description ?? "");
@@ -201,6 +265,8 @@ export default function TaskFullPage({
     setAssigneeKind(task.assignee_kind);
     setAssigneeId(task.assignee_id);
     setError("");
+    setSelectedRunId(null);
+    setTerminalEvents([]);
   }, [task]);
 
   useEffect(() => {
@@ -257,7 +323,7 @@ export default function TaskFullPage({
     }
   };
 
-  const handleExecuteAgent = () => {
+  const handleExecuteAgent = async () => {
     if (!taskCwd) {
       toast.error("Task terminal has no working directory");
       return;
@@ -278,13 +344,49 @@ export default function TaskFullPage({
       return;
     }
 
-    setCommandRequest({
-      nonce: Date.now(),
-      command: launch.command,
-    });
+    try {
+      const terminalSessionId = `task-pty-${task.id}`;
+      const run = await invoke<AgentRun>("create_agent_run", {
+        taskId: task.id,
+        agentId: assignedAgent.id,
+        provider: assignedAgent.provider,
+        prompt,
+        command: launch.command,
+        cwd: taskCwd,
+        terminalSessionId,
+      });
+
+      setCurrentRunId(run.id);
+      await loadAgentRuns();
+      setSelectedRunId(run.id);
+
+      setCommandRequest({
+        nonce: Date.now(),
+        command: launch.command,
+        agentRunId: run.id,
+      });
+
+      window.setTimeout(() => {
+        void refreshRunCodexLink(run.id);
+      }, 2500);
+    } catch (err) {
+      toast.error("Unable to create agent run", { description: String(err) });
+      return;
+    }
 
     toast.success(`Launching ${assignedAgent.name} in the task terminal`);
   };
+
+  const handleTerminalExit = useCallback(() => {
+    const runId = currentRunId;
+    if (!runId) {
+      void loadAgentRuns();
+      return;
+    }
+    window.setTimeout(() => {
+      void refreshRunCodexLink(runId);
+    }, 500);
+  }, [currentRunId, loadAgentRuns, refreshRunCodexLink]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -435,6 +537,86 @@ export default function TaskFullPage({
                 </div>
               </div>
 
+              <Separator />
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <SectionLabel>Runs</SectionLabel>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => void loadAgentRuns()}
+                    disabled={runsLoading}
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${runsLoading ? "animate-spin" : ""}`} />
+                    Refresh
+                  </Button>
+                </div>
+
+                {agentRuns.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No agent runs yet.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {agentRuns.map((run) => (
+                      <button
+                        key={run.id}
+                        type="button"
+                        className={`w-full rounded-md border p-2 text-left text-xs transition-colors hover:bg-muted ${
+                          selectedRunId === run.id ? "border-primary bg-muted" : ""
+                        }`}
+                        onClick={() => setSelectedRunId(run.id)}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate font-medium">
+                            {run.external_title || run.provider}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-muted-foreground">
+                            {run.status}
+                            {run.exit_code != null ? ` · ${run.exit_code}` : ""}
+                          </span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                          <span>{formatRunTime(run.started_at)}</span>
+                          <span className="truncate">
+                            {run.external_model || run.external_model_provider || run.provider}
+                            {run.external_tokens_used != null ? ` · ${run.external_tokens_used} tok` : ""}
+                          </span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {selectedRunId && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-muted-foreground">Terminal replay</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => {
+                          const runId = selectedRunId;
+                          void refreshRunCodexLink(runId);
+                        }}
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Link
+                      </Button>
+                    </div>
+                    <pre className="max-h-56 overflow-auto rounded-md bg-black p-2 font-mono text-[11px] leading-5 text-zinc-100">
+                      {replayText(terminalEvents) || "No terminal events captured yet."}
+                    </pre>
+                    {agentRuns.find((run) => run.id === selectedRunId)?.external_rollout_path && (
+                      <p className="break-all font-mono text-[10px] text-muted-foreground">
+                        {agentRuns.find((run) => run.id === selectedRunId)?.external_rollout_path}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {saving && (
                 <>
                   <Separator />
@@ -454,6 +636,7 @@ export default function TaskFullPage({
             hideHeader
             sessionId={`task-pty-${task.id}`}
             commandRequest={commandRequest}
+            onProcessExit={handleTerminalExit}
           />
         </div>
       </div>
