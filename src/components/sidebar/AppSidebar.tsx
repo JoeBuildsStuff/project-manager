@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/sidebar";
 import { SidebarLogo } from "@/components/app-sidebar-logo";
 import { ModeToggle } from "@/components/mode-toggle";
+import { starIconPinnedClass } from "@/lib/star-ui";
+import { cn } from "@/lib/utils";
 import type { Project } from "../../types";
 import { NotesSidebarContent } from "./NotesSidebarContent";
 import type { NotesDocumentSummary } from "@/types";
@@ -151,7 +153,7 @@ export default function AppSidebar({
                       tooltip={p.folder_name}
                     >
                       <Star
-                        className="h-3.5 w-3.5 shrink-0 text-amber-800 dark:text-amber-400"
+                        className={cn("h-3.5 w-3.5 shrink-0", starIconPinnedClass)}
                         fill="currentColor"
                         strokeWidth={0}
                         aria-hidden

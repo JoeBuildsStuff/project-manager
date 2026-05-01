@@ -51,6 +51,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import {
+  starIconPinnedClass,
+  starIconUnpinnedClass,
+  starTogglePinnedClass,
+  starToggleUnpinnedClass,
+} from "@/lib/star-ui";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Project, TaskCount, SavedView } from "../types";
 import { Badge } from "@/components/ui/badge";
@@ -122,7 +128,7 @@ const starFilterMenuContent = {
   "1": (
     <span className="flex items-center gap-2">
       <Star
-        className="h-3.5 w-3.5 shrink-0 text-amber-800 dark:text-amber-400"
+        className={cn("h-3.5 w-3.5 shrink-0", starIconPinnedClass)}
         strokeWidth={0}
         fill="currentColor"
         aria-hidden
@@ -133,7 +139,7 @@ const starFilterMenuContent = {
   "0": (
     <span className="flex items-center gap-2">
       <Star
-        className="h-3.5 w-3.5 shrink-0 text-amber-800/45 dark:text-amber-400/45"
+        className={cn("h-3.5 w-3.5 shrink-0", starIconUnpinnedClass)}
         strokeWidth={1.75}
         fill="none"
         aria-hidden
@@ -159,7 +165,12 @@ function createStarColumn(pinnedKeys: ReadonlySet<string>): ColumnDef<Project> {
       <DataTableColumnHeader
         column={column}
         title="Star"
-        icon={<Star className={iconProps} strokeWidth={1.5} />}
+        icon={
+          <Star
+            className={cn("h-3.5 w-3.5 shrink-0", starIconUnpinnedClass)}
+            strokeWidth={1.5}
+          />
+        }
         filterOptionsTitle="Filter by star"
         filterOptions={[
           { value: "1", label: starFilterMenuContent["1"] },
@@ -182,9 +193,7 @@ function createStarColumn(pinnedKeys: ReadonlySet<string>): ColumnDef<Project> {
             "inline-flex shrink-0 items-center justify-center border-0 bg-transparent p-0 shadow-none",
             "rounded-none outline-none transition-colors",
             "focus-visible:outline-none focus-visible:ring-0",
-            pinned
-              ? "text-amber-800 hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-300"
-              : "text-amber-800/45 hover:text-amber-800 dark:text-amber-400/45 dark:hover:text-amber-400",
+            pinned ? starTogglePinnedClass : starToggleUnpinnedClass,
           )}
           aria-label={pinned ? "Unstar project" : "Star project"}
           aria-pressed={pinned}

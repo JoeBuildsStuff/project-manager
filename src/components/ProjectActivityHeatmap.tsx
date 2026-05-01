@@ -134,23 +134,24 @@ function shouldShowMonthLabel(weeks: Date[][], weekIndex: number) {
   return week.some((day) => format(day, "d") === "1");
 }
 
+/** Light: softer emerald ramp on white; dark: GitHub-style greens on dark bg. */
 function getCellClass(count: number, maxCount: number, outsideRange: boolean) {
   if (outsideRange) return "bg-transparent";
-  if (count === 0) return "bg-[#1b232e]";
+  if (count === 0) return "bg-muted";
 
   const level = getActivityLevel(count, maxCount);
-  if (level === 1) return "bg-[#0e4429]";
-  if (level === 2) return "bg-[#006d32]";
-  if (level === 3) return "bg-[#26a641]";
-  return "bg-[#39d353]";
+  if (level === 1) return "bg-emerald-200 dark:bg-[#0e4429]";
+  if (level === 2) return "bg-emerald-300 dark:bg-[#006d32]";
+  if (level === 3) return "bg-emerald-500 dark:bg-[#26a641]";
+  return "bg-emerald-600 dark:bg-[#39d353]";
 }
 
 function legendClass(level: number) {
-  if (level === 0) return "bg-[#1b232e]";
-  if (level === 1) return "bg-[#0e4429]";
-  if (level === 2) return "bg-[#006d32]";
-  if (level === 3) return "bg-[#26a641]";
-  return "bg-[#39d353]";
+  if (level === 0) return "bg-muted";
+  if (level === 1) return "bg-emerald-200 dark:bg-[#0e4429]";
+  if (level === 2) return "bg-emerald-300 dark:bg-[#006d32]";
+  if (level === 3) return "bg-emerald-500 dark:bg-[#26a641]";
+  return "bg-emerald-600 dark:bg-[#39d353]";
 }
 
 function getActivityLevel(count: number, maxCount: number) {
