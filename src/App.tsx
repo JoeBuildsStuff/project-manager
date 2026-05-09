@@ -13,6 +13,8 @@ import Settings from "./components/Settings";
 import TaskTable from "./components/TaskTable";
 import Notes from "./components/Notes";
 import Terminal from "./components/Terminal";
+import TerminalSessions, { type ActivePtySession } from "./components/TerminalSessions";
+import TerminalSessionPage from "./components/TerminalSessionPage";
 import AgentTable from "./components/AgentTable";
 import AgentFullPage from "./components/AgentFullPage";
 import ProjectFullPage from "./components/ProjectFullPage";
@@ -48,7 +50,7 @@ interface DiffStat {
   lines_removed: number | null;
 }
 
-type View = "projects" | "settings" | "tasks" | "notes" | "terminal" | "agent" | "agent-detail" | "project-detail" | "task-detail";
+type View = "projects" | "settings" | "tasks" | "notes" | "terminal" | "terminal-detail" | "terminal-shell" | "agent" | "agent-detail" | "project-detail" | "task-detail";
 
 const NOTES_SELECTED_KEY = "pm-selected-note-id";
 
@@ -74,6 +76,7 @@ export default function App() {
   const [fullPageProject, setFullPageProject] = useState<Project | null>(null);
   const [fullPageTask, setFullPageTask] = useState<Task | null>(null);
   const [fullPageAgent, setFullPageAgent] = useState<LlmAgent | null>(null);
+  const [activeSession, setActiveSession] = useState<ActivePtySession | null>(null);
   const [taskDetailReturnView, setTaskDetailReturnView] = useState<"tasks" | "project-detail">("tasks");
   const [taskCounts, setTaskCounts] = useState<Map<string, TaskCount>>(new Map());
 
@@ -561,7 +564,38 @@ export default function App() {
                 />
               </div>
             ) : view === "terminal" ? (
-              <div id="terminal" tabIndex={-1} className="m-2 mb-0 min-h-0 flex-1 outline-none">
+              <div id="terminal" tabIndex={-1} className="min-h-0 flex-1 flex flex-col overflow-hidden outline-none">
+                <TerminalSessions
+                  onOpenSession={(s) => {
+                    setActiveSession(s);
+                    setView("terminal-detail");
+                  }}
+                  onNewShell={() => {
+                    setActiveSession(null);
+                    setView("terminal-shell");
+                  }}
+                  onOpenProject={(folderKey) => {
+                    const proj = allProjects.find((p) => p.folder_key === folderKey);
+                    if (proj) handleOpenFullPage(proj);
+                  }}
+                />
+              </div>
+            ) : view === "terminal-detail" && activeSession ? (
+              <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+                <TerminalSessionPage
+                  session={activeSession}
+                  onBack={() => {
+                    setActiveSession(null);
+                    setView("terminal");
+                  }}
+                  onOpenProject={(folderKey) => {
+                    const proj = allProjects.find((p) => p.folder_key === folderKey);
+                    if (proj) handleOpenFullPage(proj);
+                  }}
+                />
+              </div>
+            ) : view === "terminal-shell" ? (
+              <div className="m-2 mb-0 min-h-0 flex-1 outline-none">
                 <Terminal />
               </div>
             ) : view === "agent" ? (

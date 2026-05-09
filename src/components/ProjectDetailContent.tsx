@@ -39,6 +39,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { CategoryBadge, HostBadge, StatusBadge, StageBadge, DeployBadge } from "./StatusBadge";
 import DeleteProjectDialog from "./DeleteProjectDialog";
 import type { Project } from "../types";
@@ -1012,18 +1020,28 @@ function DevServerSettings({
       </div>
       <div className="space-y-1">
         <label className="text-[10px] text-muted-foreground">Package manager</label>
-        <select
-          value={pm}
-          onChange={(e) => setPm(e.target.value)}
-          className="h-7 w-full rounded-md border border-input bg-transparent px-2 text-xs"
+        <Select
+          value={pm || "__auto__"}
+          onValueChange={(value) => {
+            if (value != null) setPm(value === "__auto__" ? "" : value);
+          }}
         >
-          <option value="">Auto-detect</option>
-          {PACKAGE_MANAGERS.map((opt) => (
-            <option key={opt} value={opt}>
-              {opt}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger className="h-7 w-full text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="__auto__" className="text-xs">
+                Auto-detect
+              </SelectItem>
+              {PACKAGE_MANAGERS.map((opt) => (
+                <SelectItem key={opt} value={opt} className="text-xs">
+                  {opt}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
       </div>
       <div className="space-y-1">
         <label className="text-[10px] text-muted-foreground">Port (auto-detected from output)</label>

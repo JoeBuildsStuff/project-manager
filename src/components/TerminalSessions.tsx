@@ -1,0 +1,188 @@
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Plus, Square, Terminal as TerminalIcon, FolderOpen } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { SidebarTrigger } from "@/components/ui/sidebar";
+
+export interface ActivePtySession {
+  pty_id: string;
+  run_id: string | null;
+  folder_key: string | null;
+  folder_name: string | null;
+  provider: string | null;
+  command: string | null;
+  cwd: string | null;
+  started_at: number | null;
+}
+
+interface Props {
+  onOpenSession: (session: ActivePtySession) => void;
+  onNewShell: () => void;
+  onOpenProject?: (folderKey: string) => void;
+}
+
+export default function TerminalSessions({ onOpenSession, onNewShell, onOpenProject }: Props) {
+  const [sessions, setSessions] = useState<ActivePtySession[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const refresh = async () => {
+      try {
+        const rows = await invoke<ActivePtySession[]>("list_active_pty_sessions");
+        if (!cancelled) {
+          setSessions(rows);
+          setLoading(false);
+        }
+      } catch {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    refresh();
+    timer = window.setInterval(refresh, 3000);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, []);
+
+  const handleStop = async (id: string) => {
+    try {
+      await invoke("pty_kill", { id });
+      setSessions((prev) => prev.filter((s) => s.pty_id !== id));
+    } catch {
+      // ignore
+    }
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center gap-2 p-1 shrink-0">
+        <SidebarTrigger className="-ml-1 shrink-0" />
+        <h1 className="text-base font-semibold">Terminal sessions</h1>
+        <span className="text-[10px] font-mono text-muted-foreground">
+          {sessions.length} active
+        </span>
+        <div className="ml-auto">
+          <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={onNewShell}>
+            <Plus className="h-3.5 w-3.5" />
+            New shell
+          </Button>
+        </div>
+      </div>
+
+      <ScrollArea className="flex-1 min-h-0">
+        <div className="p-3">
+          {loading ? (
+            <p className="text-xs text-muted-foreground">Loading…</p>
+          ) : sessions.length === 0 ? (
+            <div className="text-xs text-muted-foreground">
+              No active terminal sessions. Start a dev server from a project, or open a new shell.
+            </div>
+          ) : (
+            <ul className="space-y-1.5">
+              {sessions.map((s) => (
+                <SessionRow
+                  key={s.pty_id}
+                  session={s}
+                  onOpen={() => onOpenSession(s)}
+                  onStop={() => handleStop(s.pty_id)}
+                  onOpenProject={
+                    s.folder_key && onOpenProject
+                      ? () => onOpenProject(s.folder_key as string)
+                      : undefined
+                  }
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+}
+
+function SessionRow({
+  session: s,
+  onOpen,
+  onStop,
+  onOpenProject,
+}: {
+  session: ActivePtySession;
+  onOpen: () => void;
+  onStop: () => void;
+  onOpenProject?: () => void;
+}) {
+  const title = s.folder_name ?? s.pty_id;
+  const sub = s.provider ?? (s.pty_id.startsWith("term-") ? "shell" : null);
+  const elapsed = s.started_at != null ? formatElapsed(Date.now() - s.started_at) : null;
+
+  return (
+    <li>
+      <div
+        className="group flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2 hover:bg-accent/40 cursor-pointer"
+        onClick={onOpen}
+      >
+        <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
+        <TerminalIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium">{title}</span>
+            {sub && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+                {sub}
+              </span>
+            )}
+          </div>
+          {s.command && (
+            <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+              {s.command}
+            </p>
+          )}
+        </div>
+        {elapsed && (
+          <span className="text-[10px] font-mono text-muted-foreground shrink-0">{elapsed}</span>
+        )}
+        {onOpenProject && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5 text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenProject();
+            }}
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            Project
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 gap-1.5 text-xs"
+          onClick={(e) => {
+            e.stopPropagation();
+            onStop();
+          }}
+        >
+          <Square className="h-3.5 w-3.5 fill-destructive text-destructive" />
+          Stop
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}

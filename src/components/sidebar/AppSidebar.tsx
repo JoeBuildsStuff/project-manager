@@ -123,10 +123,14 @@ export default function AppSidebar({
               </SidebarMenuItem>
               <SidebarMenuItem>
                 <SidebarMenuButton
-                  isActive={activeView === "terminal"}
+                  isActive={
+                    activeView === "terminal" ||
+                    activeView === "terminal-detail" ||
+                    activeView === "terminal-shell"
+                  }
                   onClick={onJumpToTerminal}
                   className="w-full"
-                  tooltip="Terminal"
+                  tooltip="Terminal sessions"
                 >
                   <Terminal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span>Terminal</span>

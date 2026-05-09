@@ -2358,6 +2358,107 @@ fn dev_pty_id(folder_key: &str) -> String {
     format!("dev::{folder_key}")
 }
 
+#[derive(Debug, Serialize)]
+pub struct ActivePtySession {
+    pub pty_id: String,
+    pub run_id: Option<String>,
+    pub folder_key: Option<String>,
+    pub folder_name: Option<String>,
+    pub provider: Option<String>,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub started_at: Option<i64>,
+}
+
+#[tauri::command]
+pub fn list_active_pty_sessions(
+    pty_state: tauri::State<'_, crate::pty::PtyState>,
+    workspace_state: tauri::State<'_, WorkspaceState>,
+) -> Result<Vec<ActivePtySession>, String> {
+    let active_ids: Vec<String> = {
+        let map = pty_state.sessions.lock().map_err(|e| e.to_string())?;
+        map.keys().cloned().collect()
+    };
+    if active_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Best-effort enrichment from agent_runs + project_metadata. If workspace not
+    // configured, just return raw pty ids.
+    let conn = match open_db(&workspace_state) {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(active_ids
+                .into_iter()
+                .map(|id| ActivePtySession {
+                    pty_id: id,
+                    run_id: None,
+                    folder_key: None,
+                    folder_name: None,
+                    provider: None,
+                    command: None,
+                    cwd: None,
+                    started_at: None,
+                })
+                .collect());
+        }
+    };
+
+    let mut out = Vec::with_capacity(active_ids.len());
+    for id in active_ids {
+        let row = conn
+            .query_row(
+                "SELECT r.id, r.folder_key, m.folder_name, r.provider, r.command, r.cwd, r.started_at
+                 FROM agent_runs r
+                 LEFT JOIN project_metadata m ON m.folder_key = r.folder_key
+                 WHERE r.terminal_session_id = ?1
+                   AND r.status IN ('starting','running')
+                 ORDER BY r.started_at DESC LIMIT 1",
+                [&id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<String>>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                        r.get::<_, Option<i64>>(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+
+        match row {
+            Some((run_id, folder_key, folder_name, provider, command, cwd, started_at)) => {
+                out.push(ActivePtySession {
+                    pty_id: id,
+                    run_id: Some(run_id),
+                    folder_key,
+                    folder_name,
+                    provider,
+                    command,
+                    cwd,
+                    started_at,
+                });
+            }
+            None => out.push(ActivePtySession {
+                pty_id: id,
+                run_id: None,
+                folder_key: None,
+                folder_name: None,
+                provider: None,
+                command: None,
+                cwd: None,
+                started_at: None,
+            }),
+        }
+    }
+    out.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    Ok(out)
+}
+
 #[tauri::command]
 pub fn set_dev_port(
     folder_key: String,

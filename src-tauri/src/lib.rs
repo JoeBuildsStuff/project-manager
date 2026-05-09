@@ -150,6 +150,7 @@ pub fn run() {
             stop_dev_server,
             get_dev_server_status,
             set_dev_port,
+            list_active_pty_sessions,
             open_url,
             sync_workspace,
             get_git_status,
