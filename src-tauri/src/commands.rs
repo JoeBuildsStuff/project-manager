@@ -253,6 +253,18 @@ fn open_db(state: &WorkspaceState) -> Result<Connection, String> {
         "ALTER TABLE project_metadata ADD COLUMN actions_run_url TEXT",
         [],
     );
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN dev_command TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN package_manager TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN dev_port INTEGER",
+        [],
+    );
 
     // Ensure tasks table exists (migration for existing databases)
     conn.execute_batch(
@@ -553,6 +565,18 @@ fn initialize_db(db_file: &Path) -> Result<(), String> {
         "ALTER TABLE project_metadata ADD COLUMN actions_run_url TEXT",
         [],
     );
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN dev_command TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN package_manager TEXT",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE project_metadata ADD COLUMN dev_port INTEGER",
+        [],
+    );
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS table_views (
@@ -604,6 +628,9 @@ pub struct Project {
     pub stage: Option<String>,
     pub actions_status: Option<String>,
     pub actions_run_url: Option<String>,
+    pub dev_command: Option<String>,
+    pub package_manager: Option<String>,
+    pub dev_port: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1970,7 +1997,8 @@ pub fn get_projects(
                 deployment, production_url, deploy_platform,
                 vercel_team_slug, vercel_project_name,
                 lines_added, lines_removed, stage,
-                actions_status, actions_run_url
+                actions_status, actions_run_url,
+                dev_command, package_manager, dev_port
          FROM project_metadata
          {}
          ORDER BY folder_key",
@@ -2002,6 +2030,9 @@ pub fn get_projects(
                 stage: row.get(18)?,
                 actions_status: row.get(19)?,
                 actions_run_url: row.get(20)?,
+                dev_command: row.get(21)?,
+                package_manager: row.get(22)?,
+                dev_port: row.get(23)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -2060,7 +2091,8 @@ pub fn get_project(
                     commit_count, last_commit_date, days_since_last_commit,
                     deployment, production_url, deploy_platform,
                     vercel_team_slug, vercel_project_name, stage,
-                    actions_status, actions_run_url
+                    actions_status, actions_run_url,
+                    dev_command, package_manager, dev_port
              FROM project_metadata WHERE folder_key = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -2097,6 +2129,9 @@ pub fn get_project(
                 stage: row.get(16)?,
                 actions_status: row.get(17)?,
                 actions_run_url: row.get(18)?,
+                dev_command: row.get(19)?,
+                package_manager: row.get(20)?,
+                dev_port: row.get(21)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -2146,7 +2181,8 @@ pub fn update_project_field(
     state: tauri::State<'_, WorkspaceState>,
 ) -> Result<(), String> {
     let column = match field.as_str() {
-        "status" | "category" | "stage" | "host" | "deploy_platform" | "production_url" => &field,
+        "status" | "category" | "stage" | "host" | "deploy_platform" | "production_url"
+        | "dev_command" | "package_manager" => &field,
         _ => return Err(format!("Field '{}' is not editable", field)),
     };
     println!(
@@ -2259,6 +2295,220 @@ pub fn launch_codex_desktop() -> Result<(), String> {
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Dev-server quick action
+// ---------------------------------------------------------------------------
+
+fn detect_package_manager(project_path: &Path) -> Option<&'static str> {
+    if project_path.join("pnpm-lock.yaml").exists() {
+        Some("pnpm")
+    } else if project_path.join("bun.lockb").exists() || project_path.join("bun.lock").exists() {
+        Some("bun")
+    } else if project_path.join("yarn.lock").exists() {
+        Some("yarn")
+    } else if project_path.join("package-lock.json").exists() {
+        Some("npm")
+    } else if project_path.join("package.json").exists() {
+        Some("npm")
+    } else {
+        None
+    }
+}
+
+fn read_package_json_dev_script(project_path: &Path) -> Option<String> {
+    let pkg_path = project_path.join("package.json");
+    let raw = fs::read_to_string(&pkg_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let scripts = json.get("scripts")?.as_object()?;
+    for key in ["dev", "start", "develop", "serve"] {
+        if let Some(v) = scripts.get(key).and_then(|v| v.as_str()) {
+            if !v.trim().is_empty() {
+                return Some(key.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn infer_dev_command(project_path: &Path) -> Option<(String, String)> {
+    let pm = detect_package_manager(project_path)?;
+    let script = read_package_json_dev_script(project_path)?;
+    let command = match pm {
+        "npm" => format!("npm run {script}"),
+        "yarn" => format!("yarn {script}"),
+        "pnpm" => format!("pnpm {script}"),
+        "bun" => format!("bun run {script}"),
+        _ => format!("npm run {script}"),
+    };
+    Some((pm.to_string(), command))
+}
+
+#[derive(Debug, Serialize)]
+pub struct DevServerInfo {
+    pub pty_id: String,
+    pub run_id: String,
+    pub command: String,
+    pub package_manager: Option<String>,
+    pub cwd: String,
+}
+
+fn dev_pty_id(folder_key: &str) -> String {
+    format!("dev::{folder_key}")
+}
+
+#[tauri::command]
+pub fn set_dev_port(
+    folder_key: String,
+    port: Option<i64>,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<(), String> {
+    let conn = open_db(&state)?;
+    conn.execute(
+        "UPDATE project_metadata SET dev_port = ?1 WHERE folder_key = ?2",
+        rusqlite::params![port, folder_key],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn detect_dev_command(
+    folder_key: String,
+    state: tauri::State<'_, WorkspaceState>,
+) -> Result<Option<(String, String)>, String> {
+    let path = workspace_path(&state, &folder_key)?;
+    Ok(infer_dev_command(&path))
+}
+
+#[tauri::command]
+pub fn start_dev_server(
+    app: tauri::AppHandle,
+    folder_key: String,
+    workspace_state: tauri::State<'_, WorkspaceState>,
+    pty_state: tauri::State<'_, crate::pty::PtyState>,
+) -> Result<DevServerInfo, String> {
+    let cwd_path = workspace_path(&workspace_state, &folder_key)?;
+    if !cwd_path.is_dir() {
+        return Err(format!(
+            "Project folder does not exist: {}",
+            cwd_path.display()
+        ));
+    }
+
+    // Resolve command + package manager: prefer stored override, fall back to inference.
+    let conn = open_db(&workspace_state)?;
+    let (stored_cmd, stored_pm): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT dev_command, package_manager FROM project_metadata WHERE folder_key = ?1",
+            [&folder_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or((None, None));
+
+    let inferred = infer_dev_command(&cwd_path);
+    let command = stored_cmd
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| inferred.as_ref().map(|(_, c)| c.clone()))
+        .ok_or_else(|| {
+            "No dev command configured and could not infer one from package.json".to_string()
+        })?;
+    let package_manager = stored_pm
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| inferred.as_ref().map(|(pm, _)| pm.clone()));
+
+    // Reject if a dev server is already running for this project.
+    let pty_id = dev_pty_id(&folder_key);
+    {
+        let map = pty_state
+            .sessions
+            .lock()
+            .map_err(|e| e.to_string())?;
+        if map.contains_key(&pty_id) {
+            return Err("Dev server is already running for this project".to_string());
+        }
+    }
+
+    let cwd_str = cwd_path.to_string_lossy().to_string();
+    let run_id = new_run_id();
+    conn.execute(
+        "INSERT INTO agent_runs (
+            id, task_id, folder_key, agent_id, provider, prompt, command, cwd,
+            terminal_session_id, status, started_at
+         )
+         VALUES (?1, NULL, ?2, NULL, 'dev-server', NULL, ?3, ?4, ?5, 'starting', ?6)",
+        rusqlite::params![run_id, folder_key, command, cwd_str, pty_id, now_ms()],
+    )
+    .map_err(|e| e.to_string())?;
+
+    crate::pty::spawn_pty_session(
+        &app,
+        &pty_state,
+        &workspace_state,
+        pty_id.clone(),
+        Some(cwd_str.clone()),
+        120,
+        30,
+        Some(run_id.clone()),
+        Some(command.clone()),
+    )?;
+
+    if let Ok(db) = workspace_db_path(&workspace_state) {
+        let _ = mark_agent_run_running_in_db(&db, &run_id);
+    }
+
+    Ok(DevServerInfo {
+        pty_id,
+        run_id,
+        command,
+        package_manager,
+        cwd: cwd_str,
+    })
+}
+
+#[tauri::command]
+pub fn stop_dev_server(
+    folder_key: String,
+    pty_state: tauri::State<'_, crate::pty::PtyState>,
+) -> Result<(), String> {
+    let pty_id = dev_pty_id(&folder_key);
+    crate::pty::kill_session(&pty_state, &pty_id).map(|_| ())
+}
+
+#[tauri::command]
+pub fn get_dev_server_status(
+    folder_key: String,
+    workspace_state: tauri::State<'_, WorkspaceState>,
+    pty_state: tauri::State<'_, crate::pty::PtyState>,
+) -> Result<Option<AgentRun>, String> {
+    let pty_id = dev_pty_id(&folder_key);
+    let alive = {
+        let map = pty_state.sessions.lock().map_err(|e| e.to_string())?;
+        map.contains_key(&pty_id)
+    };
+    if !alive {
+        return Ok(None);
+    }
+    let conn = open_db(&workspace_state)?;
+    let mut stmt = conn
+        .prepare(&format!(
+            "{} WHERE provider = 'dev-server' AND folder_key = ?1 AND terminal_session_id = ?2 \
+             AND status IN ('starting','running') \
+             ORDER BY started_at DESC LIMIT 1",
+            agent_runs_select_sql()
+        ))
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map([&folder_key, &pty_id], map_agent_run_row)
+        .map_err(|e| e.to_string())?;
+    if let Some(row) = rows.next() {
+        Ok(Some(row.map_err(|e| e.to_string())?))
+    } else {
+        Ok(None)
+    }
 }
 
 #[tauri::command]

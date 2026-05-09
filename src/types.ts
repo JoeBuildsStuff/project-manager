@@ -20,6 +20,9 @@ export interface Project {
   stage: string | null;
   actions_status: string | null;
   actions_run_url: string | null;
+  dev_command: string | null;
+  package_manager: string | null;
+  dev_port: number | null;
 }
 
 export type StatusFilter = "all" | "active" | "inbox" | "archived";

@@ -51,16 +51,16 @@ fn exit_event(id: &str) -> String {
     format!("pty://exit/{id}")
 }
 
-#[tauri::command]
-pub fn pty_start(
-    app: AppHandle,
-    state: State<'_, PtyState>,
-    workspace_state: State<'_, WorkspaceState>,
+pub fn spawn_pty_session(
+    app: &AppHandle,
+    state: &PtyState,
+    workspace_state: &WorkspaceState,
     id: String,
     cwd: Option<String>,
     cols: u16,
     rows: u16,
     agent_run_id: Option<String>,
+    command: Option<String>,
 ) -> Result<(), String> {
     {
         let map = state.sessions.lock().map_err(|e| e.to_string())?;
@@ -80,7 +80,11 @@ pub fn pty_start(
         .map_err(|e| e.to_string())?;
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let mut cmd = CommandBuilder::new(shell);
+    let mut cmd = CommandBuilder::new(&shell);
+    if let Some(line) = command.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        // Use a login+interactive shell so user PATH (nvm, pnpm, etc.) is loaded.
+        cmd.args(["-l", "-i", "-c", line]);
+    }
     cmd.env("TERM", "xterm-256color");
     if let Some(home) = dirs::home_dir() {
         cmd.env("HOME", home.to_string_lossy().to_string());
@@ -99,7 +103,7 @@ pub fn pty_start(
 
     let agent_run_id = Arc::new(Mutex::new(agent_run_id));
     let next_seq = Arc::new(Mutex::new(0));
-    let db_path = workspace_db_path(&workspace_state).ok();
+    let db_path = workspace_db_path(workspace_state).ok();
 
     let session = PtySession {
         master: pair.master,
@@ -210,6 +214,31 @@ pub fn pty_start(
 }
 
 #[tauri::command]
+pub fn pty_start(
+    app: AppHandle,
+    state: State<'_, PtyState>,
+    workspace_state: State<'_, WorkspaceState>,
+    id: String,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+    agent_run_id: Option<String>,
+    command: Option<String>,
+) -> Result<(), String> {
+    spawn_pty_session(
+        &app,
+        &state,
+        &workspace_state,
+        id,
+        cwd,
+        cols,
+        rows,
+        agent_run_id,
+        command,
+    )
+}
+
+#[tauri::command]
 pub fn pty_set_agent_run(
     state: State<'_, PtyState>,
     id: String,
@@ -283,11 +312,17 @@ pub fn pty_resize(
     Ok(())
 }
 
+pub fn kill_session(state: &PtyState, id: &str) -> Result<bool, String> {
+    let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
+    if let Some(mut session) = map.remove(id) {
+        let _ = session.child.kill();
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 #[tauri::command]
 pub fn pty_kill(state: State<'_, PtyState>, id: String) -> Result<(), String> {
-    let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
-    if let Some(mut session) = map.remove(&id) {
-        let _ = session.child.kill();
-    }
-    Ok(())
+    kill_session(&state, &id).map(|_| ())
 }

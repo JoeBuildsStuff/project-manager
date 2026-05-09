@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { ArrowLeft, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
@@ -34,6 +36,31 @@ export default function ProjectFullPage({
 }: Props) {
   const [tab, setTab] = useState<Tab>("details");
   const projectCwd = workspacePath ? `${workspacePath}/${p.folder_key}` : undefined;
+  const devPtyId = `dev::${p.folder_key}`;
+  const [devRunId, setDevRunId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      invoke<{ id: string } | null>("get_dev_server_status", { folderKey: p.folder_key })
+        .then((run) => {
+          if (cancelled) return;
+          setDevRunId(run?.id ?? null);
+        })
+        .catch(() => {});
+    };
+    refresh();
+
+    let unlistenExit: UnlistenFn | null = null;
+    listen(`pty://exit/${devPtyId}`, () => setDevRunId(null)).then((fn) => {
+      unlistenExit = fn;
+    });
+
+    return () => {
+      cancelled = true;
+      unlistenExit?.();
+    };
+  }, [p.folder_key, devPtyId]);
 
   const handleDelete = async (folderKey: string) => {
     await onDelete(folderKey);
@@ -83,7 +110,12 @@ export default function ProjectFullPage({
       <div className="flex items-center gap-1 p-1 shrink-0">
         <TabButton active={tab === "details"} onClick={() => setTab("details")}>Details</TabButton>
         <TabButton active={tab === "tasks"} onClick={() => setTab("tasks")}>Tasks</TabButton>
-        <TabButton active={tab === "console"} onClick={() => setTab("console")}>Console</TabButton>
+        <TabButton active={tab === "console"} onClick={() => setTab("console")}>
+          Console
+          {devRunId && (
+            <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-emerald-500 align-middle" />
+          )}
+        </TabButton>
       </div>
 
       {/* Content */}
@@ -114,7 +146,17 @@ export default function ProjectFullPage({
       )}
       {tab === "console" && (
         <div className="flex-1 min-h-0 m-2 mb-0">
-          <Terminal workingDirectory={projectCwd} hideHeader />
+          {devRunId ? (
+            <Terminal
+              key={`dev-${devRunId}`}
+              attachToPtyId={devPtyId}
+              replayFromRunId={devRunId}
+              workingDirectory={projectCwd}
+              hideHeader
+            />
+          ) : (
+            <Terminal key="shell" workingDirectory={projectCwd} hideHeader />
+          )}
         </div>
       )}
     </div>

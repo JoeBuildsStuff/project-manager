@@ -16,6 +16,19 @@ interface TerminalProps {
     agentRunId?: string | null;
   } | null;
   onProcessExit?: () => void;
+  /** Attach to an existing PTY session (e.g., a dev server) instead of spawning a new one. */
+  attachToPtyId?: string;
+  /** When attaching, optionally replay events from this agent_run before live output. */
+  replayFromRunId?: string;
+}
+
+interface TerminalEventDto {
+  id: number;
+  run_id: string;
+  seq: number;
+  ts: number;
+  direction: string;
+  data: string | null;
 }
 
 export default function Terminal({
@@ -24,12 +37,14 @@ export default function Terminal({
   sessionId,
   commandRequest,
   onProcessExit,
+  attachToPtyId,
+  replayFromRunId,
 }: TerminalProps = {}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const idRef = useRef<string>(
-    sessionId ?? `term-${Math.random().toString(36).slice(2, 10)}`
+    attachToPtyId ?? sessionId ?? `term-${Math.random().toString(36).slice(2, 10)}`
   );
   const readyRef = useRef(false);
   const pendingCommandRef = useRef<string | null>(null);
@@ -93,6 +108,25 @@ export default function Terminal({
 
       if (disposed) return;
 
+      if (attachToPtyId) {
+        // Attach mode: replay history (if any) and let live events flow.
+        if (replayFromRunId) {
+          try {
+            const events = await invoke<TerminalEventDto[]>("get_terminal_events", {
+              runId: replayFromRunId,
+            });
+            if (disposed) return;
+            for (const ev of events) {
+              if (ev.direction === "output" && ev.data) term.write(ev.data);
+            }
+          } catch {
+            // best-effort replay
+          }
+        }
+        readyRef.current = true;
+        return;
+      }
+
       const { cols, rows } = term;
       try {
         await invoke("pty_start", {
@@ -145,13 +179,16 @@ export default function Terminal({
       disposeResize.dispose();
       ro.disconnect();
       container.removeEventListener("click", onFocus);
-      invoke("pty_kill", { id }).catch(() => {});
+      // In attach mode we don't own the PTY — leave it running for other consumers.
+      if (!attachToPtyId) {
+        invoke("pty_kill", { id }).catch(() => {});
+      }
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
-    // Re-mount pty when workingDirectory changes.
-  }, [workingDirectory]);
+    // Re-mount when working directory or attach target changes.
+  }, [workingDirectory, attachToPtyId, replayFromRunId]);
 
   useEffect(() => {
     if (!commandRequest) {

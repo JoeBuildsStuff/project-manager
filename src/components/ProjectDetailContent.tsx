@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   ExternalLink,
   GitBranch,
@@ -11,6 +12,8 @@ import {
   Loader2,
   ChevronDown,
   AlertCircle,
+  Play,
+  Square,
 } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
@@ -158,6 +161,11 @@ export function ProjectDetailContent({
         onOpenTerminal={() => openWith("open_in_terminal", p.folder_key)}
         onLaunchClaude={() => invoke("launch_claude_desktop")}
         onLaunchCodex={() => invoke("launch_codex_desktop")}
+      />
+      <DevServerButton
+        project={p}
+        onFieldSave={(field, value) => onFieldChange(p.folder_key, field, value)}
+        onError={(msg) => setActionError(msg)}
       />
       {p.production_url && (
         <ActionButton icon={<ExternalLink className="h-3.5 w-3.5" />} onClick={() => openWith("open_url", p.production_url as string)}>
@@ -763,5 +771,279 @@ function OpenEditorButtonGroup({
         </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+interface DevServerInfo {
+  pty_id: string;
+  run_id: string;
+  command: string;
+  package_manager: string | null;
+  cwd: string;
+}
+
+const PACKAGE_MANAGERS = ["pnpm", "npm", "yarn", "bun"];
+const PORT_REGEX = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::(\d{2,5}))?/i;
+
+function DevServerButton({
+  project: p,
+  onFieldSave,
+  onError,
+}: {
+  project: Project;
+  onFieldSave: (field: string, value: string | null) => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const folderKey = p.folder_key;
+  const ptyId = `dev::${folderKey}`;
+  const [running, setRunning] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [command, setCommand] = useState<string | null>(null);
+  const [port, setPort] = useState<number | null>(p.dev_port);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Sync port when project prop changes
+  useEffect(() => setPort(p.dev_port), [p.dev_port]);
+
+  // Discover existing running state on mount
+  useEffect(() => {
+    let cancelled = false;
+    invoke<{ id: string; command: string } | null>("get_dev_server_status", { folderKey })
+      .then((run) => {
+        if (cancelled || !run) return;
+        setRunning(true);
+        setCommand(run.command);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [folderKey]);
+
+  // Listen for output (port detection) and exit
+  useEffect(() => {
+    let unlistenOutput: UnlistenFn | null = null;
+    let unlistenExit: UnlistenFn | null = null;
+    let detected = false;
+
+    listen<{ id: string; data: string }>(`pty://output/${ptyId}`, (e) => {
+      if (detected) return;
+      const match = e.payload.data.match(PORT_REGEX);
+      if (match && match[1]) {
+        const found = parseInt(match[1], 10);
+        if (Number.isFinite(found) && found > 0) {
+          detected = true;
+          setPort(found);
+          invoke("set_dev_port", { folderKey, port: found }).catch(() => {});
+        }
+      }
+    }).then((fn) => {
+      unlistenOutput = fn;
+    });
+
+    listen(`pty://exit/${ptyId}`, () => {
+      setRunning(false);
+      setCommand(null);
+    }).then((fn) => {
+      unlistenExit = fn;
+    });
+
+    return () => {
+      unlistenOutput?.();
+      unlistenExit?.();
+    };
+  }, [ptyId, folderKey]);
+
+  const handleStart = async () => {
+    setBusy(true);
+    try {
+      const result = await invoke<DevServerInfo>("start_dev_server", { folderKey });
+      setCommand(result.command);
+      setRunning(true);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleStop = async () => {
+    setBusy(true);
+    try {
+      await invoke("stop_dev_server", { folderKey });
+      setRunning(false);
+      setCommand(null);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const primary = running ? (
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-7 gap-1.5 rounded-l-[min(var(--radius-md),12px)]! rounded-r-none! text-xs"
+      onClick={handleStop}
+      disabled={busy}
+      title={command ? `Running: ${command}` : "Dev server running"}
+    >
+      {busy ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <Square className="h-3.5 w-3.5 fill-emerald-500 text-emerald-500" />
+      )}
+      Stop dev
+    </Button>
+  ) : (
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-7 gap-1.5 rounded-l-[min(var(--radius-md),12px)]! rounded-r-none! text-xs"
+      onClick={handleStart}
+      disabled={busy}
+    >
+      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+      Dev
+    </Button>
+  );
+
+  return (
+    <>
+      <ButtonGroup>
+        {primary}
+        <Popover open={settingsOpen} onOpenChange={setSettingsOpen}>
+          <PopoverTrigger
+            className={cn(
+              buttonVariants({ variant: "outline", size: "sm" }),
+              "h-7 rounded-l-none! rounded-r-[min(var(--radius-md),12px)]! px-2"
+            )}
+            aria-label="Dev server settings"
+          >
+            <ChevronDown className="h-3.5 w-3.5" />
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-72 p-3 space-y-3">
+            <DevServerSettings
+              project={p}
+              onClose={() => setSettingsOpen(false)}
+              onFieldSave={onFieldSave}
+              onError={onError}
+            />
+          </PopoverContent>
+        </Popover>
+      </ButtonGroup>
+      {port != null && (
+        <ActionButton
+          icon={<ExternalLink className="h-3.5 w-3.5" />}
+          onClick={() => invoke("open_url", { url: `http://localhost:${port}` })}
+        >
+          localhost:{port}
+        </ActionButton>
+      )}
+    </>
+  );
+}
+
+function DevServerSettings({
+  project: p,
+  onClose,
+  onFieldSave,
+  onError,
+}: {
+  project: Project;
+  onClose: () => void;
+  onFieldSave: (field: string, value: string | null) => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [command, setCommand] = useState(p.dev_command ?? "");
+  const [pm, setPm] = useState(p.package_manager ?? "");
+  const [portStr, setPortStr] = useState(p.dev_port != null ? String(p.dev_port) : "");
+  const [saving, setSaving] = useState(false);
+  const [detected, setDetected] = useState<{ pm: string; command: string } | null>(null);
+
+  useEffect(() => {
+    invoke<[string, string] | null>("detect_dev_command", { folderKey: p.folder_key })
+      .then((res) => {
+        if (res) setDetected({ pm: res[0], command: res[1] });
+      })
+      .catch(() => {});
+  }, [p.folder_key]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const cmdValue = command.trim() ? command.trim() : null;
+      const pmValue = pm.trim() ? pm.trim() : null;
+      const portTrim = portStr.trim();
+      const portValue = portTrim === "" ? null : Number(portTrim);
+      if (portValue != null && !Number.isFinite(portValue)) {
+        throw new Error("Port must be a number");
+      }
+      await onFieldSave("dev_command", cmdValue);
+      await onFieldSave("package_manager", pmValue);
+      await invoke("set_dev_port", { folderKey: p.folder_key, port: portValue });
+      onClose();
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="text-xs font-medium text-foreground">Dev server</p>
+        {detected && (
+          <p className="text-[10px] text-muted-foreground mt-0.5">
+            Detected: <span className="font-mono">{detected.command}</span>
+          </p>
+        )}
+      </div>
+      <div className="space-y-1">
+        <label className="text-[10px] text-muted-foreground">Command override</label>
+        <Input
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          placeholder={detected?.command ?? "pnpm dev"}
+          className="h-7 text-xs font-mono"
+        />
+      </div>
+      <div className="space-y-1">
+        <label className="text-[10px] text-muted-foreground">Package manager</label>
+        <select
+          value={pm}
+          onChange={(e) => setPm(e.target.value)}
+          className="h-7 w-full rounded-md border border-input bg-transparent px-2 text-xs"
+        >
+          <option value="">Auto-detect</option>
+          {PACKAGE_MANAGERS.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-[10px] text-muted-foreground">Port (auto-detected from output)</label>
+        <Input
+          value={portStr}
+          onChange={(e) => setPortStr(e.target.value)}
+          placeholder="3000"
+          className="h-7 text-xs font-mono"
+          inputMode="numeric"
+        />
+      </div>
+      <div className="flex justify-end gap-1.5">
+        <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onClose} disabled={saving}>
+          Cancel
+        </Button>
+        <Button size="sm" className="h-7 text-xs" onClick={save} disabled={saving}>
+          {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Save
+        </Button>
+      </div>
+    </div>
   );
 }
