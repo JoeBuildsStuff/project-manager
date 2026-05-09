@@ -169,9 +169,6 @@ export function ProjectDetailContent({
           Repo
         </ActionButton>
       )}
-      <ActionButton icon={<Pencil className="h-3.5 w-3.5" />} onClick={openRenameDialog} disabled={renaming}>
-        Rename
-      </ActionButton>
       <ActionButton icon={<Trash2 className="h-3.5 w-3.5" />} onClick={() => { setActionError(""); setDeleteOpen(true); }} disabled={renaming} variant="destructive">
         Delete
       </ActionButton>
@@ -226,8 +223,10 @@ export function ProjectDetailContent({
   if (layout === "page") {
     return (
       <>
+        <FolderNameHeader folderName={p.folder_name} folderKey={p.folder_key} onRename={openRenameDialog} />
+
         {p.description && (
-          <p className="text-sm leading-relaxed text-muted-foreground mb-6">{p.description}</p>
+          <p className="mt-2 text-sm leading-relaxed text-muted-foreground mb-6">{p.description}</p>
         )}
 
         <div>
@@ -255,9 +254,12 @@ export function ProjectDetailContent({
   // Sheet layout (original single-column)
   return (
     <div className="space-y-5 px-5 pb-6">
-      {p.description && (
-        <p className="text-xs leading-relaxed text-muted-foreground">{p.description}</p>
-      )}
+      <div>
+        <FolderNameHeader folderName={p.folder_name} folderKey={p.folder_key} onRename={openRenameDialog} compact />
+        {p.description && (
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{p.description}</p>
+        )}
+      </div>
 
       <div>
         <SectionLabel>Quick actions</SectionLabel>
@@ -482,6 +484,37 @@ function RenameFolderDialog({
 // ---------------------------------------------------------------------------
 // Utility components
 // ---------------------------------------------------------------------------
+
+function FolderNameHeader({
+  folderName,
+  folderKey,
+  onRename,
+  compact,
+}: {
+  folderName: string;
+  folderKey: string;
+  onRename: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onDoubleClick={onRename}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") onRename();
+      }}
+      className="block max-w-full rounded-sm text-left transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      aria-label={`Rename ${folderName}`}
+    >
+      <h2 className={cn("truncate font-semibold text-foreground", compact ? "text-sm" : "text-xl")}>
+        {folderName}
+      </h2>
+      {!compact && folderKey !== folderName && (
+        <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{folderKey}</p>
+      )}
+    </button>
+  );
+}
 
 export function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
