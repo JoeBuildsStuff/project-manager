@@ -292,7 +292,14 @@ export default function App() {
     return pinnedProjectKeys
       .filter((k) => keySet.has(k))
       .map((k) => allProjects.find((p) => p.folder_key === k))
-      .filter((p): p is Project => p != null);
+      .filter((p): p is Project => p != null)
+      .sort((a, b) => {
+        const byName = a.folder_name.localeCompare(b.folder_name, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+        return byName || a.folder_key.localeCompare(b.folder_key, undefined, { numeric: true });
+      });
   }, [allProjects, pinnedProjectKeys]);
 
   const handleToggleProjectPin = useCallback((folderKey: string) => {
