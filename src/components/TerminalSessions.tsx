@@ -1,15 +1,28 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Plus, Square, Terminal as TerminalIcon, FolderOpen } from "lucide-react";
+import { Plus, Square, Terminal as TerminalIcon, FolderOpen, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ButtonGroup } from "@/components/ui/button-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ChevronDown } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export interface ActivePtySession {
   pty_id: string;
   run_id: string | null;
   folder_key: string | null;
   folder_name: string | null;
+  dev_port: number | null;
+  repo: string | null;
+  production_url: string | null;
   provider: string | null;
   command: string | null;
   cwd: string | null;
@@ -131,6 +144,10 @@ function SessionRow({
   const title = s.folder_name ?? s.pty_id;
   const sub = s.provider ?? (s.pty_id.startsWith("term-") ? "shell" : null);
   const elapsed = s.started_at != null ? formatElapsed(Date.now() - s.started_at) : null;
+  const localhostUrl = s.dev_port != null ? `http://localhost:${s.dev_port}` : null;
+  const canOpenProjectActions = Boolean(s.folder_key);
+  const canOpenRepo = Boolean(s.repo && s.repo.startsWith("http"));
+  const canOpenLive = Boolean(s.production_url);
 
   return (
     <li>
@@ -158,6 +175,9 @@ function SessionRow({
         {elapsed && (
           <span className="text-[10px] font-mono text-muted-foreground shrink-0">{elapsed}</span>
         )}
+        {canOpenProjectActions && s.folder_key && (
+          <OpenEditorButtonGroup folderKey={s.folder_key} />
+        )}
         {onOpenProject && (
           <Button
             size="sm"
@@ -170,6 +190,48 @@ function SessionRow({
           >
             <FolderOpen className="h-3.5 w-3.5" />
             Project
+          </Button>
+        )}
+        {canOpenLive && s.production_url && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              invoke("open_url", { url: s.production_url }).catch(() => {});
+            }}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            Live site
+          </Button>
+        )}
+        {canOpenRepo && s.repo && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              invoke("open_url", { url: s.repo }).catch(() => {});
+            }}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            Repo
+          </Button>
+        )}
+        {localhostUrl && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5 text-xs"
+            onClick={(e) => {
+              e.stopPropagation();
+              invoke("open_url", { url: localhostUrl }).catch(() => {});
+            }}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            localhost:{s.dev_port}
           </Button>
         )}
         <Button
@@ -186,6 +248,82 @@ function SessionRow({
         </Button>
       </div>
     </li>
+  );
+}
+
+function OpenEditorButtonGroup({ folderKey }: { folderKey: string }) {
+  const open = (command: string) => invoke(command, { folderKey }).catch(() => {});
+  const launch = (command: string) => invoke(command).catch(() => {});
+
+  return (
+    <DropdownMenu>
+      <ButtonGroup>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 gap-1.5 rounded-l-[min(var(--radius-md),12px)]! rounded-r-none! text-xs"
+          onClick={(e) => {
+            e.stopPropagation();
+            open("open_in_cursor");
+          }}
+        >
+          Cursor
+        </Button>
+        <DropdownMenuTrigger
+          className={cn(
+            "inline-flex h-7 items-center justify-center rounded-l-none! rounded-r-[min(var(--radius-md),12px)]! border border-input bg-background px-2 text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+          )}
+          onClick={(e) => e.stopPropagation()}
+          aria-label="Choose editor"
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+        </DropdownMenuTrigger>
+      </ButtonGroup>
+      <DropdownMenuContent align="end" className="w-28">
+        <DropdownMenuGroup>
+          <DropdownMenuItem
+            onClick={(e) => {
+              e.stopPropagation();
+              open("open_in_finder");
+            }}
+          >
+            Finder
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={(e) => {
+              e.stopPropagation();
+              open("open_in_warp");
+            }}
+          >
+            Warp
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={(e) => {
+              e.stopPropagation();
+              open("open_in_terminal");
+            }}
+          >
+            Terminal
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={(e) => {
+              e.stopPropagation();
+              launch("launch_codex_desktop");
+            }}
+          >
+            Codex
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={(e) => {
+              e.stopPropagation();
+              launch("launch_claude_desktop");
+            }}
+          >
+            Claude
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

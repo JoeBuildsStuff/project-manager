@@ -815,16 +815,32 @@ function DevServerButton({
 
   // Discover existing running state on mount
   useEffect(() => {
+    let timer: number | null = null;
     let cancelled = false;
-    invoke<{ id: string; command: string } | null>("get_dev_server_status", { folderKey })
-      .then((run) => {
-        if (cancelled || !run) return;
-        setRunning(true);
-        setCommand(run.command);
-      })
-      .catch(() => {});
+
+    setRunning(false);
+    setCommand(null);
+
+    const refresh = () => {
+      invoke<{ id: string; command: string } | null>("get_dev_server_status", { folderKey })
+        .then((run) => {
+          if (cancelled) return;
+          setRunning(Boolean(run));
+          setCommand(run?.command ?? null);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setRunning(false);
+          setCommand(null);
+        });
+    };
+
+    refresh();
+    timer = window.setInterval(refresh, 3000);
+
     return () => {
       cancelled = true;
+      if (timer) window.clearInterval(timer);
     };
   }, [folderKey]);
 

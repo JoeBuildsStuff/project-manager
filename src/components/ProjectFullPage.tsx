@@ -41,6 +41,8 @@ export default function ProjectFullPage({
 
   useEffect(() => {
     let cancelled = false;
+    let timer: number | null = null;
+
     const refresh = () => {
       invoke<{ id: string } | null>("get_dev_server_status", { folderKey: p.folder_key })
         .then((run) => {
@@ -50,6 +52,7 @@ export default function ProjectFullPage({
         .catch(() => {});
     };
     refresh();
+    timer = window.setInterval(refresh, 3000);
 
     let unlistenExit: UnlistenFn | null = null;
     listen(`pty://exit/${devPtyId}`, () => setDevRunId(null)).then((fn) => {
@@ -58,6 +61,7 @@ export default function ProjectFullPage({
 
     return () => {
       cancelled = true;
+      if (timer) window.clearInterval(timer);
       unlistenExit?.();
     };
   }, [p.folder_key, devPtyId]);

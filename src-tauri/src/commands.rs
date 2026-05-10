@@ -2364,6 +2364,9 @@ pub struct ActivePtySession {
     pub run_id: Option<String>,
     pub folder_key: Option<String>,
     pub folder_name: Option<String>,
+    pub dev_port: Option<i64>,
+    pub repo: Option<String>,
+    pub production_url: Option<String>,
     pub provider: Option<String>,
     pub command: Option<String>,
     pub cwd: Option<String>,
@@ -2395,6 +2398,9 @@ pub fn list_active_pty_sessions(
                     run_id: None,
                     folder_key: None,
                     folder_name: None,
+                    dev_port: None,
+                    repo: None,
+                    production_url: None,
                     provider: None,
                     command: None,
                     cwd: None,
@@ -2408,7 +2414,8 @@ pub fn list_active_pty_sessions(
     for id in active_ids {
         let row = conn
             .query_row(
-                "SELECT r.id, r.folder_key, m.folder_name, r.provider, r.command, r.cwd, r.started_at
+                "SELECT r.id, r.folder_key, m.folder_name, m.dev_port, m.repo, m.production_url,
+                        r.provider, r.command, r.cwd, r.started_at
                  FROM agent_runs r
                  LEFT JOIN project_metadata m ON m.folder_key = r.folder_key
                  WHERE r.terminal_session_id = ?1
@@ -2420,10 +2427,13 @@ pub fn list_active_pty_sessions(
                         r.get::<_, String>(0)?,
                         r.get::<_, Option<String>>(1)?,
                         r.get::<_, Option<String>>(2)?,
-                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<i64>>(3)?,
                         r.get::<_, Option<String>>(4)?,
                         r.get::<_, Option<String>>(5)?,
-                        r.get::<_, Option<i64>>(6)?,
+                        r.get::<_, Option<String>>(6)?,
+                        r.get::<_, Option<String>>(7)?,
+                        r.get::<_, Option<String>>(8)?,
+                        r.get::<_, Option<i64>>(9)?,
                     ))
                 },
             )
@@ -2431,12 +2441,26 @@ pub fn list_active_pty_sessions(
             .map_err(|e| e.to_string())?;
 
         match row {
-            Some((run_id, folder_key, folder_name, provider, command, cwd, started_at)) => {
+            Some((
+                run_id,
+                folder_key,
+                folder_name,
+                dev_port,
+                repo,
+                production_url,
+                provider,
+                command,
+                cwd,
+                started_at,
+            )) => {
                 out.push(ActivePtySession {
                     pty_id: id,
                     run_id: Some(run_id),
                     folder_key,
                     folder_name,
+                    dev_port,
+                    repo,
+                    production_url,
                     provider,
                     command,
                     cwd,
@@ -2448,6 +2472,9 @@ pub fn list_active_pty_sessions(
                 run_id: None,
                 folder_key: None,
                 folder_name: None,
+                dev_port: None,
+                repo: None,
+                production_url: None,
                 provider: None,
                 command: None,
                 cwd: None,
