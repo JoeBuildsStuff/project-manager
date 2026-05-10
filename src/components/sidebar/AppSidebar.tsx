@@ -8,6 +8,7 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
@@ -34,6 +35,7 @@ export interface AppSidebarProps {
   onSelectNoteId?: (id: string) => void;
   onCreateNote?: () => void;
   notesListLoading?: boolean;
+  activeTerminalSessionCount?: number;
   pinnedProjects?: Project[];
   recentProjects?: Project[];
   activeProjectKey?: string | null;
@@ -55,6 +57,7 @@ export default function AppSidebar({
   onSelectNoteId,
   onCreateNote,
   notesListLoading = false,
+  activeTerminalSessionCount = 0,
   pinnedProjects = [],
   recentProjects = [],
   activeProjectKey = null,
@@ -135,6 +138,9 @@ export default function AppSidebar({
                   <Terminal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span>Terminal</span>
                 </SidebarMenuButton>
+                {activeTerminalSessionCount > 0 && (
+                  <SidebarMenuBadge>{activeTerminalSessionCount}</SidebarMenuBadge>
+                )}
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>

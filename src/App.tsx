@@ -77,6 +77,7 @@ export default function App() {
   const [fullPageTask, setFullPageTask] = useState<Task | null>(null);
   const [fullPageAgent, setFullPageAgent] = useState<LlmAgent | null>(null);
   const [activeSession, setActiveSession] = useState<ActivePtySession | null>(null);
+  const [activeTerminalSessionCount, setActiveTerminalSessionCount] = useState(0);
   const [taskDetailReturnView, setTaskDetailReturnView] = useState<"tasks" | "project-detail">("tasks");
   const [taskCounts, setTaskCounts] = useState<Map<string, TaskCount>>(new Map());
 
@@ -248,6 +249,33 @@ export default function App() {
       load();
       loadTaskCounts();
     }
+  }, [workspaceReady]);
+
+  useEffect(() => {
+    if (!workspaceReady) {
+      setActiveTerminalSessionCount(0);
+      return;
+    }
+
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const refresh = async () => {
+      try {
+        const rows = await invoke<ActivePtySession[]>("list_active_pty_sessions");
+        if (!cancelled) setActiveTerminalSessionCount(rows.length);
+      } catch {
+        if (!cancelled) setActiveTerminalSessionCount(0);
+      }
+    };
+
+    refresh();
+    timer = window.setInterval(refresh, 3000);
+
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
   }, [workspaceReady]);
 
   useEffect(() => {
@@ -532,6 +560,7 @@ export default function App() {
           onSelectNoteId={handleSelectNoteId}
           onCreateNote={handleCreateNote}
           notesListLoading={notesListLoading}
+          activeTerminalSessionCount={activeTerminalSessionCount}
           pinnedProjects={pinnedProjects}
           recentProjects={recentProjects}
           activeProjectKey={fullPageProject?.folder_key ?? null}
@@ -578,6 +607,7 @@ export default function App() {
                     const proj = allProjects.find((p) => p.folder_key === folderKey);
                     if (proj) handleOpenFullPage(proj);
                   }}
+                  onSessionCountChange={setActiveTerminalSessionCount}
                 />
               </div>
             ) : view === "terminal-detail" && activeSession ? (

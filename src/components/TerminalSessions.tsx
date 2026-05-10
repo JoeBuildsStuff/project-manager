@@ -20,9 +20,15 @@ interface Props {
   onOpenSession: (session: ActivePtySession) => void;
   onNewShell: () => void;
   onOpenProject?: (folderKey: string) => void;
+  onSessionCountChange?: (count: number) => void;
 }
 
-export default function TerminalSessions({ onOpenSession, onNewShell, onOpenProject }: Props) {
+export default function TerminalSessions({
+  onOpenSession,
+  onNewShell,
+  onOpenProject,
+  onSessionCountChange,
+}: Props) {
   const [sessions, setSessions] = useState<ActivePtySession[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -35,6 +41,7 @@ export default function TerminalSessions({ onOpenSession, onNewShell, onOpenProj
         const rows = await invoke<ActivePtySession[]>("list_active_pty_sessions");
         if (!cancelled) {
           setSessions(rows);
+          onSessionCountChange?.(rows.length);
           setLoading(false);
         }
       } catch {
@@ -48,12 +55,16 @@ export default function TerminalSessions({ onOpenSession, onNewShell, onOpenProj
       cancelled = true;
       if (timer) window.clearInterval(timer);
     };
-  }, []);
+  }, [onSessionCountChange]);
 
   const handleStop = async (id: string) => {
     try {
       await invoke("pty_kill", { id });
-      setSessions((prev) => prev.filter((s) => s.pty_id !== id));
+      setSessions((prev) => {
+        const next = prev.filter((s) => s.pty_id !== id);
+        onSessionCountChange?.(next.length);
+        return next;
+      });
     } catch {
       // ignore
     }
