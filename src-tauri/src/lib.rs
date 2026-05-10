@@ -94,14 +94,6 @@ pub fn run() {
                                 }
                                 // Emit event to frontend so sidebar banner appears
                                 let _ = app_handle.emit("update-available", &version);
-
-                                app_handle
-                                    .dialog()
-                                    .message(format!(
-                                        "Version {version} is available.\n\nYou can install it from the sidebar."
-                                    ))
-                                    .title("Update Available")
-                                    .show(|_| {});
                             }
                             Ok(None) => {
                                 app_handle
