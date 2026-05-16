@@ -790,8 +790,27 @@ interface DevServerInfo {
   cwd: string;
 }
 
-const PACKAGE_MANAGERS = ["pnpm", "npm", "yarn", "bun"];
+interface DevCommandDetection {
+  kind: string;
+  package_manager: string | null;
+  command: string;
+  default_port: number | null;
+}
+
+const PACKAGE_MANAGERS = ["pnpm", "npm", "yarn", "bun", "swift", "codex", "custom"];
+const WEB_PACKAGE_MANAGERS = new Set(["pnpm", "npm", "yarn", "bun"]);
 const PORT_REGEX = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::(\d{2,5}))?/i;
+
+function isWebDevTarget(project: Project, detected: DevCommandDetection | null): boolean {
+  if (detected) {
+    return detected.kind === "node" || detected.default_port != null;
+  }
+  if (project.package_manager && WEB_PACKAGE_MANAGERS.has(project.package_manager)) {
+    return true;
+  }
+  const command = project.dev_command?.toLowerCase() ?? "";
+  return /\b(vite|next|astro|remix|webpack|nuxt|svelte-kit|npm|pnpm|yarn|bun)\b/.test(command);
+}
 
 function DevServerButton({
   project: p,
@@ -809,9 +828,25 @@ function DevServerButton({
   const [command, setCommand] = useState<string | null>(null);
   const [port, setPort] = useState<number | null>(p.dev_port);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [detectedTarget, setDetectedTarget] = useState<DevCommandDetection | null>(null);
 
   // Sync port when project prop changes
   useEffect(() => setPort(p.dev_port), [p.dev_port]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDetectedTarget(null);
+    invoke<DevCommandDetection | null>("detect_dev_command", { folderKey })
+      .then((res) => {
+        if (!cancelled) setDetectedTarget(res);
+      })
+      .catch(() => {
+        if (!cancelled) setDetectedTarget(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [folderKey]);
 
   // Discover existing running state on mount
   useEffect(() => {
@@ -884,6 +919,16 @@ function DevServerButton({
       const result = await invoke<DevServerInfo>("start_dev_server", { folderKey });
       setCommand(result.command);
       setRunning(true);
+      if (result.package_manager && !p.package_manager) {
+        setDetectedTarget((current) =>
+          current ?? {
+            kind: WEB_PACKAGE_MANAGERS.has(result.package_manager ?? "") ? "node" : "custom",
+            package_manager: result.package_manager,
+            command: result.command,
+            default_port: null,
+          }
+        );
+      }
     } catch (e) {
       onError(String(e));
     } finally {
@@ -957,7 +1002,7 @@ function DevServerButton({
           </PopoverContent>
         </Popover>
       </ButtonGroup>
-      {port != null && (
+      {port != null && isWebDevTarget(p, detectedTarget) && (
         <ActionButton
           icon={<ExternalLink className="h-3.5 w-3.5" />}
           onClick={() => invoke("open_url", { url: `http://localhost:${port}` })}
@@ -984,12 +1029,12 @@ function DevServerSettings({
   const [pm, setPm] = useState(p.package_manager ?? "");
   const [portStr, setPortStr] = useState(p.dev_port != null ? String(p.dev_port) : "");
   const [saving, setSaving] = useState(false);
-  const [detected, setDetected] = useState<{ pm: string; command: string } | null>(null);
+  const [detected, setDetected] = useState<DevCommandDetection | null>(null);
 
   useEffect(() => {
-    invoke<[string, string] | null>("detect_dev_command", { folderKey: p.folder_key })
+    invoke<DevCommandDetection | null>("detect_dev_command", { folderKey: p.folder_key })
       .then((res) => {
-        if (res) setDetected({ pm: res[0], command: res[1] });
+        if (res) setDetected(res);
       })
       .catch(() => {});
   }, [p.folder_key]);
@@ -1018,10 +1063,10 @@ function DevServerSettings({
   return (
     <div className="space-y-3">
       <div>
-        <p className="text-xs font-medium text-foreground">Dev server</p>
+        <p className="text-xs font-medium text-foreground">Run command</p>
         {detected && (
           <p className="text-[10px] text-muted-foreground mt-0.5">
-            Detected: <span className="font-mono">{detected.command}</span>
+            Detected {detected.kind}: <span className="font-mono">{detected.command}</span>
           </p>
         )}
       </div>
@@ -1030,12 +1075,12 @@ function DevServerSettings({
         <Input
           value={command}
           onChange={(e) => setCommand(e.target.value)}
-          placeholder={detected?.command ?? "pnpm dev"}
+          placeholder={detected?.command ?? "pnpm dev, swift run, ./script/run.sh"}
           className="h-7 text-xs font-mono"
         />
       </div>
       <div className="space-y-1">
-        <label className="text-[10px] text-muted-foreground">Package manager</label>
+        <label className="text-[10px] text-muted-foreground">Runner</label>
         <Select
           value={pm || "__auto__"}
           onValueChange={(value) => {
@@ -1060,11 +1105,11 @@ function DevServerSettings({
         </Select>
       </div>
       <div className="space-y-1">
-        <label className="text-[10px] text-muted-foreground">Port (auto-detected from output)</label>
+        <label className="text-[10px] text-muted-foreground">Port (web apps only, auto-detected from output)</label>
         <Input
           value={portStr}
           onChange={(e) => setPortStr(e.target.value)}
-          placeholder="3000"
+          placeholder={detected?.default_port != null ? String(detected.default_port) : "none"}
           className="h-7 text-xs font-mono"
           inputMode="numeric"
         />

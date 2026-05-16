@@ -2298,7 +2298,7 @@ pub fn launch_codex_desktop() -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Dev-server quick action
+// Dev/run quick action
 // ---------------------------------------------------------------------------
 
 fn detect_package_manager(project_path: &Path) -> Option<&'static str> {
@@ -2312,6 +2312,52 @@ fn detect_package_manager(project_path: &Path) -> Option<&'static str> {
         Some("npm")
     } else if project_path.join("package.json").exists() {
         Some("npm")
+    } else {
+        None
+    }
+}
+
+fn toml_string_value(line: &str, key: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix(key)?.trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn read_codex_run_action(project_path: &Path) -> Option<String> {
+    let env_path = project_path.join(".codex/environments/environment.toml");
+    let raw = fs::read_to_string(env_path).ok()?;
+    let mut in_action = false;
+    let mut action_name: Option<String> = None;
+    let mut action_command: Option<String> = None;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[[actions]]" {
+            if matches!(action_name.as_deref(), Some("Run")) {
+                return action_command.filter(|c| !c.trim().is_empty());
+            }
+            in_action = true;
+            action_name = None;
+            action_command = None;
+            continue;
+        }
+
+        if !in_action {
+            continue;
+        }
+
+        if let Some(name) = toml_string_value(trimmed, "name") {
+            action_name = Some(name);
+        } else if let Some(command) = toml_string_value(trimmed, "command") {
+            action_command = Some(command);
+        }
+    }
+
+    if matches!(action_name.as_deref(), Some("Run")) {
+        action_command.filter(|c| !c.trim().is_empty())
     } else {
         None
     }
@@ -2332,7 +2378,60 @@ fn read_package_json_dev_script(project_path: &Path) -> Option<String> {
     None
 }
 
-fn infer_dev_command(project_path: &Path) -> Option<(String, String)> {
+fn swift_package_executable_name(project_path: &Path) -> Option<String> {
+    let package_path = project_path.join("Package.swift");
+    let raw = fs::read_to_string(package_path).ok()?;
+
+    for marker in [".executable(name:", ".executableTarget(name:"] {
+        if let Some(idx) = raw.find(marker) {
+            let after = &raw[idx + marker.len()..];
+            let after = after.trim_start();
+            if let Some(rest) = after.strip_prefix('"') {
+                if let Some(end) = rest.find('"') {
+                    return Some(rest[..end].to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DevCommandDetection {
+    pub kind: String,
+    pub package_manager: Option<String>,
+    pub command: String,
+    pub default_port: Option<i64>,
+}
+
+fn infer_dev_command(project_path: &Path) -> Option<DevCommandDetection> {
+    if let Some(command) = read_codex_run_action(project_path) {
+        let kind = if project_path.join("Package.swift").exists() {
+            "macos-app"
+        } else {
+            "custom"
+        };
+        return Some(DevCommandDetection {
+            kind: kind.to_string(),
+            package_manager: Some("codex".to_string()),
+            command,
+            default_port: None,
+        });
+    }
+
+    if project_path.join("Package.swift").exists() {
+        let command = swift_package_executable_name(project_path)
+            .map(|name| format!("swift run {name}"))
+            .unwrap_or_else(|| "swift run".to_string());
+        return Some(DevCommandDetection {
+            kind: "swiftpm".to_string(),
+            package_manager: Some("swift".to_string()),
+            command,
+            default_port: None,
+        });
+    }
+
     let pm = detect_package_manager(project_path)?;
     let script = read_package_json_dev_script(project_path)?;
     let command = match pm {
@@ -2342,7 +2441,12 @@ fn infer_dev_command(project_path: &Path) -> Option<(String, String)> {
         "bun" => format!("bun run {script}"),
         _ => format!("npm run {script}"),
     };
-    Some((pm.to_string(), command))
+    Some(DevCommandDetection {
+        kind: "node".to_string(),
+        package_manager: Some(pm.to_string()),
+        command,
+        default_port: None,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -2505,7 +2609,7 @@ pub fn set_dev_port(
 pub fn detect_dev_command(
     folder_key: String,
     state: tauri::State<'_, WorkspaceState>,
-) -> Result<Option<(String, String)>, String> {
+) -> Result<Option<DevCommandDetection>, String> {
     let path = workspace_path(&state, &folder_key)?;
     Ok(infer_dev_command(&path))
 }
@@ -2540,13 +2644,13 @@ pub fn start_dev_server(
     let inferred = infer_dev_command(&cwd_path);
     let command = stored_cmd
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| inferred.as_ref().map(|(_, c)| c.clone()))
+        .or_else(|| inferred.as_ref().map(|d| d.command.clone()))
         .ok_or_else(|| {
-            "No dev command configured and could not infer one from package.json".to_string()
+            "No run command configured and could not infer one from package.json, Package.swift, or .codex/environments/environment.toml".to_string()
         })?;
     let package_manager = stored_pm
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| inferred.as_ref().map(|(pm, _)| pm.clone()));
+        .or_else(|| inferred.as_ref().and_then(|d| d.package_manager.clone()));
 
     // Reject if a dev server is already running for this project.
     let pty_id = dev_pty_id(&folder_key);
