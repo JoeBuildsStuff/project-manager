@@ -1,4 +1,5 @@
 use crate::config::{self, AppConfig};
+use base64::{engine::general_purpose, Engine as _};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -3218,10 +3219,15 @@ fn create_gitea_repo(name: &str, private: bool, token: &str) -> Result<String, S
         .ok_or_else(|| "Gitea response did not include clone_url.".into())
 }
 
+fn basic_auth_header(username: &str, password: &str) -> String {
+    let encoded = general_purpose::STANDARD.encode(format!("{username}:{password}"));
+    format!("Authorization: Basic {encoded}")
+}
+
 fn push_with_token(repo_path: &Path, host: &str, token: &str) -> Result<(), String> {
     let auth_header = match host {
-        "github" => format!("Authorization: Bearer {}", token),
-        "gitea" => format!("Authorization: token {}", token),
+        "github" => basic_auth_header("x-access-token", token),
+        "gitea" => basic_auth_header("oauth2", token),
         _ => return Err("Unsupported remote host.".into()),
     };
     let extra_header = format!("http.extraHeader={}", auth_header);
@@ -3230,6 +3236,19 @@ fn push_with_token(repo_path: &Path, host: &str, token: &str) -> Result<(), Stri
         &["-c", &extra_header, "push", "-u", "origin", "main"],
         "Push initial commit",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::basic_auth_header;
+
+    #[test]
+    fn basic_auth_header_encodes_username_and_password() {
+        assert_eq!(
+            basic_auth_header("x-access-token", "ghp_example"),
+            "Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2hwX2V4YW1wbGU="
+        );
+    }
 }
 
 fn upsert_project_from_folder(

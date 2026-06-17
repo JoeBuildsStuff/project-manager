@@ -263,7 +263,7 @@ export default function Settings({ workspacePath, onWorkspaceChanged, onBack }: 
           <SecretField
             icon={<KeyRound className="h-4 w-4" />}
             title="GitHub Token"
-            description="A personal access token used to update repo metadata (e.g. About URL) via the GitHub API. Stored securely in your macOS Keychain — never written to disk."
+            description="A personal access token used to create repositories, push initial commits, and update repo metadata. Stored securely in your macOS Keychain — never written to disk."
             help={
               <p className="text-xs text-muted-foreground mt-1">
                 Create one at{" "}
@@ -274,7 +274,7 @@ export default function Settings({ workspacePath, onWorkspaceChanged, onBack }: 
                   github.com/settings/tokens
                 </button>
                 {" "}with <code className="rounded bg-muted px-1 py-0.5 text-[10px]">repo</code> scope
-                (or fine-grained with <code className="rounded bg-muted px-1 py-0.5 text-[10px]">metadata: read/write</code>).
+                (or a fine-grained token that can create repositories and read/write contents).
               </p>
             }
             placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
