@@ -1002,7 +1002,7 @@ function DevServerButton({
           </PopoverContent>
         </Popover>
       </ButtonGroup>
-      {port != null && isWebDevTarget(p, detectedTarget) && (
+      {running && port != null && isWebDevTarget(p, detectedTarget) && (
         <ActionButton
           icon={<ExternalLink className="h-3.5 w-3.5" />}
           onClick={() => invoke("open_url", { url: `http://localhost:${port}` })}

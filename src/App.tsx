@@ -19,6 +19,7 @@ import AgentTable from "./components/AgentTable";
 import AgentFullPage from "./components/AgentFullPage";
 import ProjectFullPage from "./components/ProjectFullPage";
 import TaskFullPage from "./components/TaskFullPage";
+import CommandPalette from "./components/CommandPalette";
 import { perfStart, perfEnd } from "./lib/perf";
 import { ChatProvider, ChatFooterBar, ChatPanel } from "@/components/chat";
 import { useChatStore } from "@/lib/chat/chat-store";
@@ -60,6 +61,7 @@ export default function App() {
   const [workspaceReady, setWorkspaceReady] = useState<boolean | null>(null);
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [view, setView] = useState<View>("projects");
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [allProjects, setAllProjects] = useState<Project[]>([]);
   const [selected, setSelected] = useState<Project | null>(null);
@@ -296,6 +298,12 @@ export default function App() {
     }
   }, [view, workspaceReady, refreshNotesList]);
 
+  useEffect(() => {
+    if (commandPaletteOpen && workspaceReady) {
+      void refreshNotesList();
+    }
+  }, [commandPaletteOpen, workspaceReady, refreshNotesList]);
+
   // Client-side filtering — instant, no IPC round-trip
   const projects = useMemo(() => {
     if (!search) return allProjects;
@@ -483,6 +491,11 @@ export default function App() {
     if (p) handleOpenFullPage(p);
   };
 
+  const handleOpenNoteFromCommand = (id: string) => {
+    setSelectedNoteId(id);
+    setView("notes");
+  };
+
   const handleBackFromFullPage = () => {
     setView("projects");
     setFullPageProject(null);
@@ -548,6 +561,7 @@ export default function App() {
       >
         <AppSidebar
           onOpenSettings={() => setView("settings")}
+          onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           onJumpToProjects={handleJumpToProjects}
           onJumpToTasks={handleJumpToTasks}
           onJumpToNotes={handleJumpToNotes}
@@ -742,6 +756,30 @@ export default function App() {
               handleOpenFullPage(created);
             }
           }}
+        />
+        <CommandPalette
+          open={commandPaletteOpen}
+          onOpenChange={setCommandPaletteOpen}
+          projects={allProjects}
+          pinnedProjects={pinnedProjects}
+          recentProjects={recentProjects}
+          notes={notesList}
+          activeView={view}
+          onOpenSettings={() => setView("settings")}
+          onJumpToProjects={handleJumpToProjects}
+          onJumpToTasks={handleJumpToTasks}
+          onJumpToNotes={handleJumpToNotes}
+          onJumpToTerminal={handleJumpToTerminal}
+          onJumpToAgent={handleJumpToAgent}
+          onNewProject={() => {
+            setNewProjectInitialName("");
+            setNewProjectOpen(true);
+          }}
+          onSync={() => void handleSync()}
+          onOpenProject={handleOpenFullPage}
+          onOpenTask={(task) => handleOpenTaskDetail(task, "tasks")}
+          onOpenNote={handleOpenNoteFromCommand}
+          onOpenAgent={handleOpenAgentDetail}
         />
       </SidebarProvider>
 

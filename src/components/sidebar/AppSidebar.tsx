@@ -1,4 +1,4 @@
-import { Bot, Check, File, FolderOpen, Kanban, Settings, Star, Terminal } from "lucide-react";
+import { Bot, Check, Command, File, FolderOpen, Kanban, Settings, Star, Terminal } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/sidebar";
 import { SidebarLogo } from "@/components/app-sidebar-logo";
 import { ModeToggle } from "@/components/mode-toggle";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { starIconPinnedClass } from "@/lib/star-ui";
 import { cn } from "@/lib/utils";
 import type { Project } from "../../types";
@@ -23,6 +24,7 @@ import type { NotesDocumentSummary } from "@/types";
 
 export interface AppSidebarProps {
   onOpenSettings?: () => void;
+  onOpenCommandPalette?: () => void;
   onJumpToProjects?: () => void;
   onJumpToTasks?: () => void;
   onJumpToNotes?: () => void;
@@ -45,6 +47,7 @@ export interface AppSidebarProps {
 
 export default function AppSidebar({
   onOpenSettings,
+  onOpenCommandPalette,
   onJumpToProjects,
   onJumpToTasks,
   onJumpToNotes,
@@ -215,6 +218,22 @@ export default function AppSidebar({
       </SidebarContent>
 
       <SidebarFooter className="px-2 py-2 space-y-1">
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              onClick={onOpenCommandPalette}
+              tooltip="Command menu"
+              className="w-full"
+            >
+              <Command className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span>Command Menu</span>
+              <KbdGroup className="ml-auto group-data-[collapsible=icon]:hidden">
+                <Kbd className="h-4 min-w-4 px-1 text-[10px]">⌘</Kbd>
+                <Kbd className="h-4 min-w-4 px-1 text-[10px]">K</Kbd>
+              </KbdGroup>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
         <div className="flex items-center justify-between gap-2 group-data-[collapsible=icon]:flex-col">
           <SidebarMenu className="min-w-0 flex-1">
             <SidebarMenuItem>
